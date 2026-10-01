@@ -8,16 +8,12 @@
 
 //! # What is listening
 //!
-//! A [`Service`] is an identification, and every identification here carries
-//! the confidence that says how much to believe it. That number is the point of
-//! the type: a guess from a port-number table and a conclusion from a completed
-//! protocol handshake are both "ssh", and a consumer that cannot tell them
-//! apart will report the first as if it were the second.
+//! A [`Service`] is an identification with a confidence: a guess from a port-number
+//! table and a conclusion from a completed handshake are both "ssh", and the confidence
+//! tells them apart.
 //!
-//! Identification is progressive. A port is named from its number the moment it
-//! is found open, then refined as a banner is read and analyzers run, so the
-//! same `Service` is merged into repeatedly and only ever improves. See
-//! [`Service::merge`] for the rule.
+//! Identification is progressive. A port is named from its number when found open,
+//! then refined as a banner is read and analyzers run; see [`Service::merge`].
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -27,14 +23,8 @@ use crate::model::port::Build;
 
 /// The most CPE identifiers one service will have recorded against it.
 ///
-/// The same bound [`MAX_CPES_PER_OS`] applies to an OS fingerprint, and it
-/// matters more here: a fingerprint is derived from stack behaviour, where a
-/// service's identifiers are derived from a banner, which is text the target
-/// chose and can make as long and as varied as it likes.
-///
-/// Read from there rather than written again: two literals under a paragraph
-/// asserting they are the same number is the one arrangement in which they can
-/// stop being it.
+/// The same bound as [`MAX_CPES_PER_OS`], read from it. It matters more here, since a
+/// banner is text the target chose.
 pub const MAX_CPES_PER_SERVICE: usize = MAX_CPES_PER_OS;
 
 /// A service identified on a port, and how sure the identification is.
@@ -43,9 +33,7 @@ pub const MAX_CPES_PER_SERVICE: usize = MAX_CPES_PER_OS;
 pub struct Service {
     /// The high-level service protocol name, such as `"ssh"` or `"http"`.
     ///
-    /// Shared rather than owned, like every other repeated string in the model:
-    /// a scan finds the same few dozen service names across every host it
-    /// touches.
+    /// Shared, since a scan finds the same few dozen names on every host.
     name: Arc<str>,
 
     /// A metric from 0 to 100 representing the certainty of this identification.
@@ -70,19 +58,15 @@ pub struct Service {
     /// Common Platform Enumeration identifiers, deduplicated and bounded by
     /// [`MAX_CPES_PER_SERVICE`].
     ///
-    /// A set rather than a vector, so adding one is a lookup rather than a scan
-    /// of everything already there, and so two services carrying the same
-    /// identifiers compare equal whatever order the analyzers found them in.
+    /// A set, so two services with the same identifiers compare equal whatever order
+    /// they were found in.
     cpe: BTreeSet<Arc<str>>,
 
     /// Whose build of the software this is, where the reply said.
     ///
-    /// Beside the version rather than folded into it, because the two answer
-    /// different questions: the version names the upstream release the build
-    /// started from, and the build says whose fixes were applied to it since.
-    /// A known-vulnerability match on the first alone is right for an upstream
-    /// build and routinely wrong for a distribution's. See
-    /// [`Build`].
+    /// Separate from the version: the version names the upstream release, the build
+    /// says whose fixes were applied since. A vulnerability match on the version alone
+    /// is routinely wrong for a distribution's build. See [`Build`].
     build: Option<Build>,
 }
 
@@ -90,8 +74,7 @@ impl Service {
     /// Creates a service identity named `name`, believed to the degree
     /// `confidence` says.
     ///
-    /// `confidence` is clamped to 100, so a caller computing a score cannot
-    /// produce one that outranks a completed handshake.
+    /// `confidence` is clamped to 100.
     pub fn new(name: impl Into<Arc<str>>, confidence: u8) -> Self {
         Self {
             name: name.into(),
@@ -112,26 +95,16 @@ impl Service {
 
     /// Whether the name came from the port number rather than from the service.
     ///
-    /// A confidence of zero is what every scan path seeds a classified port
-    /// with: the label the port number is registered under, or a placeholder
-    /// where it is registered under none. It is not a finding. Nothing was asked
-    /// and nothing answered, and a port called `http` on the strength of being
-    /// port 80 may be anything at all, which is what
-    /// [`ServiceDetection::Off`](crate::config::ServiceDetection::Off) says about
-    /// the same label.
+    /// A confidence of zero is what every scan path seeds a port with: its registered
+    /// label, or a placeholder. Not a finding: port 80 called `http` may be anything (see
+    /// [`ServiceDetection::Off`](crate::config::ServiceDetection::Off)).
     ///
-    /// Why nothing was asked is the phase's to say, not the port's, as every
-    /// choice about how deep a scan probes is: a port its phase only listened
-    /// to, [`ScanSettings::listened_only_to`](crate::report::ScanSettings::listened_only_to),
-    /// keeps the label its number implies on purpose, as does every port of a
-    /// phase with service detection off. Carried on each port as well, the
-    /// fact would be one copy per port of one decision, and a merge would have
-    /// to reconcile the copies with the settings they came from.
+    /// Why nothing was asked is recorded on the phase, not the port: see
+    /// [`ScanSettings::listened_only_to`](crate::report::ScanSettings::listened_only_to)
+    /// and the phase's service detection setting.
     ///
-    /// Read by anything that must not mistake a guess for an identification:
-    /// [`diff`](crate::diff) ignores an inferred service entirely, because two
-    /// tools with different port catalogues would otherwise appear to disagree
-    /// about every port on the network.
+    /// [`diff`](crate::diff) ignores inferred services, since tools with different port
+    /// catalogues would otherwise disagree about every port.
     pub fn is_inferred(&self) -> bool {
         self.confidence == 0
     }
@@ -203,10 +176,8 @@ impl Service {
 
     /// Records a CPE identifier, if [`MAX_CPES_PER_SERVICE`] leaves room.
     ///
-    /// Takes `&mut self`, so a service already attached to a port can be
-    /// enriched by a later analyzer. That is the whole point of progressive
-    /// identification, and a builder that consumed the service would rule it
-    /// out.
+    /// Takes `&mut self`, so a later analyzer can enrich a service already attached to a
+    /// port.
     pub fn add_cpe(&mut self, cpe: impl Into<Arc<str>>) {
         if self.cpe.len() < MAX_CPES_PER_SERVICE {
             self.cpe.insert(cpe.into());
@@ -222,28 +193,17 @@ impl Service {
 
     /// Folds another identification of this endpoint into this one.
     ///
-    /// Confidence decides. A strictly surer `other` names the service and
-    /// supplies every detail it carries: `name`, `product`, `vendor`, `version`,
-    /// `extrainfo` and `build`. An equally sure or less sure one fills the gaps
-    /// it finds and displaces nothing, which is the module's rule that a tie
-    /// keeps what is already recorded.
+    /// Confidence decides. A strictly surer `other` supplies `name`, `product`,
+    /// `vendor`, `version`, `extrainfo` and `build`; an equally or less sure one only
+    /// fills gaps.
     ///
-    /// Two builds by the same distributor are two accounts of one build and
-    /// complete each other, whichever is surer, as [`Build::merge`] describes;
-    /// two by different distributors are different builds, and the surer
-    /// identification's stands.
+    /// Two builds by the same distributor complete each other (see [`Build::merge`]);
+    /// by different distributors, the surer identification's stands.
     ///
-    /// CPEs union whatever the confidences were, since a CPE claims that an
-    /// identifier applies rather than that this is the service, and a probe that
-    /// was less sure of the name can still have extracted a valid one. The cap
-    /// still applies, so a fold cannot smuggle past what
-    /// [`add_cpe`](Self::add_cpe) refuses.
+    /// CPEs union regardless of confidence, since a less certain probe can still
+    /// extract a valid one. The cap still applies.
     pub fn merge(&mut self, other: Service) {
-        // Destructured rather than reached through `other.…`, so a field added
-        // to this struct is a compile error here and not a value that quietly
-        // stops being folded. The doc above names all five details for the
-        // same reason: a doc naming fewer than the body moves is the same
-        // omission one step earlier.
+        // Destructured, so a new field fails to compile until it is merged.
         let Service {
             name,
             confidence,
@@ -322,18 +282,13 @@ mod tests {
         assert_eq!(service.cpes().len(), 1);
     }
 
-    /// Confidence is what ranks two identifications, so a value above 100 would
-    /// outrank a completed handshake and could never be displaced. A caller
-    /// computing a score must not be able to produce one.
+    /// Confidence is clamped to 100.
     #[test]
     fn a_confidence_above_100_is_clamped_rather_than_kept() {
         assert_eq!(Service::new("ssh", 101).confidence(), 100);
     }
 
-    /// The surer identification names the service and the other still fills what
-    /// it left blank. Both directions matter: a handshake that identified `http`
-    /// precisely should not lose the version a banner read, and a banner guess
-    /// should not rename what a handshake established.
+    /// The surer identification names the service, and the other fills its blanks.
     #[test]
     fn the_surer_identification_names_the_service_and_the_other_fills_its_gaps() {
         let mut guess = Service::new("http", 50).with_product("nginx");
@@ -358,11 +313,9 @@ mod tests {
         );
     }
 
-    /// A CPE claims that an identifier applies rather than that this is the
-    /// service, so it is kept whatever the confidences were, which is the rule
-    /// [`OsFingerprint::merge`](crate::model::host::OsFingerprint::merge)
-    /// follows. Repeats collapse, since two analyzers commonly extract the same
-    /// one.
+    /// CPEs are kept whatever the confidences, as in
+    /// [`OsFingerprint::merge`](crate::model::host::OsFingerprint::merge), and repeats
+    /// collapse.
     #[test]
     fn cpes_are_unioned_across_a_merge_whatever_the_confidence() {
         let mut ssh = Service::new("ssh", 100).with_cpe("cpe:/a:openbsd:openssh");
@@ -375,10 +328,7 @@ mod tests {
         assert_eq!(ssh.cpes().len(), 2, "one new, one already held");
     }
 
-    /// Two accounts of one distributor's build complete each other whichever is
-    /// surer: the banner that stated the revision and the rule that named the
-    /// release describe one build. Accounts of different distributors' builds
-    /// are two builds, and the surer identification's stands.
+    /// One distributor's builds complete each other; different distributors' do not.
     #[test]
     fn a_merge_completes_one_distributors_build_and_ranks_two_by_confidence() {
         use crate::model::port::{Build, Distributor, Release, ReleaseBasis};
@@ -412,9 +362,7 @@ mod tests {
         );
     }
 
-    /// A service's identifiers come from a banner, which the target writes.
-    /// Without a bound, a host that answers with a few thousand plausible CPE
-    /// strings makes this engine hold every one of them.
+    /// CPEs are bounded, since the target writes the banner.
     #[test]
     fn a_services_cpe_list_is_bounded_like_an_os_fingerprints() {
         let mut service = Service::new("http", 50);
@@ -423,7 +371,7 @@ mod tests {
         }
         assert_eq!(service.cpes().len(), MAX_CPES_PER_SERVICE);
 
-        // And a merge cannot smuggle past what `add_cpe` refuses.
+        // A merge cannot get past what `add_cpe` refuses.
         let mut other = Service::new("http", 50);
         for i in 0..MAX_CPES_PER_SERVICE {
             other.add_cpe(format!("cpe:/a:other:product:{i}"));

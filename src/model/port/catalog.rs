@@ -8,54 +8,39 @@
 
 //! # Which ports are worth asking about, in what order
 //!
-//! A scan that was given no port specification has to pick one, and the pick is
-//! the single largest determinant of what the scan finds. This module is that
-//! pick: three lists of port numbers, most likely to be listening first, from
+//! A scan given no port specification has to pick one, and the pick largely decides what
+//! it finds. This module holds three lists, most likely to be listening first, from
 //! which [`PortSet::top_tcp`](super::PortSet::top_tcp),
 //! [`PortSet::top_udp`](super::PortSet::top_udp) and
 //! [`PortSet::top_sctp`](super::PortSet::top_sctp) take a prefix.
 //!
-//! The third is not a default. Nothing probes SCTP unless a caller asked about
-//! it, so that list answers "which SCTP ports" for a front end offering the
-//! scan rather than filling in a blank.
+//! Nothing probes SCTP unless a caller asks, so the SCTP list is for a front end
+//! offering that choice.
 //!
 //! ## Why not the well-known range
 //!
-//! `1-1024` is the obvious default and it is a bad one, because the ports a
-//! machine actually listens on in 2026 are mostly not in it. A Raspberry Pi
-//! running the ordinary home-server stack answers on 3001, 5432 and 7778, and a
-//! scan of the well-known range reports it as running three services when it is
-//! running six. The failure is silent and it looks exactly like a quiet host,
-//! which is the worst way for a scanner to be wrong.
-//!
-//! The range is also *wasteful* at the same time as being incomplete: it spends
-//! most of its probes on ports assigned to protocols that have not been deployed
-//! this century. Ranking, rather than ranging, spends the same thousand probes
-//! on the thousand ports most likely to answer.
+//! Most ports a machine listens on in 2026 are outside `1-1024`. A Raspberry Pi running
+//! the ordinary home-server stack answers on 3001, 5432 and 7778, so a well-known-range
+//! scan reports three services out of six, and the miss looks like a quiet host. The
+//! range also spends most of its probes on protocols nobody deploys. Ranking spends the
+//! same thousand probes on the thousand ports most likely to answer.
 //!
 //! ## Where the ranking comes from
 //!
-//! It is authored here, from IANA's registry and from what is deployed, rather
-//! than derived from another scanner's frequency data. That data is licensed, and
-//! the widely-used set was collected from internet-wide scans in 2008. Its long
-//! tail is full of ports whose
-//! services are gone, and it predates containers, the observability stack,
-//! message brokers, the modern development server, and the home lab. Those are
-//! most of what a 2026 scan meets, and they are what the tail here holds
-//! instead.
+//! Authored here from IANA's registry and from what is deployed. The widely used
+//! frequency data from other scanners is licensed and was collected in 2008; its tail
+//! is full of dead services and predates containers, observability stacks, message
+//! brokers, modern development servers and the home lab, which are most of what a 2026
+//! scan meets.
 //!
 //! ## How precise the order is
 //!
-//! Ranks 1 to 100 are ordered. Those hundred are hand-ranked against each
-//! other, so a caller asking for the top ten gets the ten that answer most
-//! often, and a scan of the top hundred is a considered scan rather than a
-//! truncation.
+//! Ranks 1 to 100 are hand-ranked against each other, so the top ten are the ten that
+//! answer most often.
 //!
-//! Past 100, the tier is the claim and the position inside it is not. Each
-//! tier below holds ports of comparable likelihood, sorted numerically so the
-//! list can be read, searched and diffed by hand. Pretending to rank the 734th
-//! port against the 735th would be inventing precision from nothing; a reader
-//! should take "in tier 3" seriously and "at index 612" not at all.
+//! Past 100 only the tier means something. Each tier holds ports of comparable
+//! likelihood, sorted numerically so it can be read and diffed by hand; take "in tier
+//! 3" seriously and "at index 612" not at all.
 //!
 //! ## What the tiers hold
 //!
@@ -66,36 +51,27 @@
 //! | 3 | 376–647 | The dense bands: HTTP alternates, display and RPC ranges |
 //! | 4 | 648–1000 | The long tail still worth one packet |
 //!
-//! Tier 2 is where the modern self-hosted stack sits, and it goes stale fastest:
-//! a media server, a subtitle fetcher, a photo library, a local model runner.
-//! Nineteen of its ports, two of them ones every machine with a GPU now listens
-//! on, hold places that would otherwise go to registrations from the eighties
-//! that nothing has spoken this century. That trade is the maintenance this
-//! file wants: not more ports, the *current* ones.
+//! Tier 2 holds the modern self-hosted stack and goes stale fastest: a media server, a
+//! subtitle fetcher, a photo library, a local model runner. Nineteen of its ports, two
+//! of which every machine with a GPU now listens on, displace registrations from the
+//! eighties. Maintenance here means keeping the ports current.
 //!
-//! Tier 3 is the one that differs most from convention, and it is deliberate. In
-//! 2026 a web service with no assigned port lands somewhere in `8000-8100` or
-//! `9000-9100` far more often than it lands on any single registered number, so
-//! those two bands are covered whole. The same argument covers the VNC and X11
-//! display ranges, the Windows dynamic RPC range where the interesting endpoints
-//! actually bind, and the RPC ephemeral range.
+//! Tier 3 differs most from convention. A web service with no assigned port lands in
+//! `8000-8100` or `9000-9100` far more often than on any single registered number, so
+//! those bands are covered whole, as are the VNC and X11 display ranges, the Windows
+//! dynamic RPC range, and the RPC ephemeral range.
 //!
 //! ## Adding to it
 //!
 //! The SCTP list has no tiers and needs none; [`SCTP_BY_PREVALENCE`] says why.
 //!
-//! Insert the port in the tier that describes it and keep the tier sorted; the
-//! tests below hold both the sorting and the total. A port whose service this
-//! engine can identify has to appear somewhere in the list. The fingerprint
-//! database and this catalogue are checked against each other, so authoring a
-//! signature for a service on a port nobody probes fails the test rather than
-//! shipping as an invisible gap.
+//! Insert the port in the tier that describes it and keep the tier sorted; the tests
+//! check sorting and the total. A port whose service this engine can identify must
+//! appear in the list: the fingerprint database and this catalogue are checked against
+//! each other.
 
-/// TCP ports, most likely to be listening first. See the module documentation
-/// for how the order was arrived at and how much of it to believe.
-///
-/// A `const` like [`TCP_TIER_BOUNDS`] and [`COMMON_DISCOVERY_PORTS`](super::set::COMMON_DISCOVERY_PORTS)
-/// beside it, rather than a `static`, since nothing wants its address.
+/// TCP ports, most likely to be listening first. See the module documentation for how
+/// much of the order to believe.
 pub const TCP_BY_PREVALENCE: &[u16] = &[
     // ── Tier 1 (ranks 1–100): hand-ranked against each other ────────────────
     443, 80, 22, 445, 3389, 8080, 139, 135, 21, 25, 8443, 53, 23, 110, 143, 993, 995, 3306, 5432,
@@ -133,12 +109,10 @@ pub const TCP_BY_PREVALENCE: &[u16] = &[
     51515, 61208, 61613, 61616, 62078, 64738,
     // ── Tier 3 (376–647): the dense bands, covered whole ────────────────────
     //
-    // `8000-8100` and `9000-9100` are where a web service with no assigned port
-    // lands, and covering them whole finds more in 2026 than any comparable
-    // number of individually registered ports would. Then the development-server
-    // bands, the VNC and X11 display ranges numbered upward from the first, the
-    // licence-server range, the RPC ephemeral range, and the rest of the Windows
-    // dynamic RPC range.
+    // `8000-8100` and `9000-9100`, where a web service with no assigned port lands.
+    // Then the development-server bands, the VNC and X11 display ranges upward
+    // from the first, the licence-server range, the RPC ephemeral range, and the
+    // rest of the Windows dynamic RPC range.
     3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009,
     4010, 5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008, 5009, 5010, 5904, 5905, 5906, 5907, 5908,
     5909, 5910, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6009, 6010, 7003, 7004, 7005, 7006,
@@ -186,13 +160,11 @@ pub const TCP_BY_PREVALENCE: &[u16] = &[
 
 /// UDP ports, most likely to answer first.
 ///
-/// A quarter the length of the TCP list, and that is a statement about the
-/// protocol rather than an omission. A UDP probe is only answered by a service
-/// that recognises the payload sent to it or by an ICMP port unreachable the
-/// host is rate-limited to emitting roughly once a second, so a UDP port costs
-/// far more to classify and far more of them come back
-/// [`OpenOrNoReply`](super::PortState::OpenOrNoReply) whatever is done. Asking
-/// about a thousand of them buys a slower scan and almost no extra certainty.
+/// A quarter the length of the TCP list. A UDP probe is answered only by a service that
+/// recognises the payload or by an ICMP port unreachable, which hosts rate-limit to
+/// about one a second, so UDP ports cost far more to classify and many come back
+/// [`OpenOrNoReply`](super::PortState::OpenOrNoReply) regardless. A thousand would buy
+/// a slower scan and little certainty.
 ///
 /// The first forty are hand-ranked; past that, see the module documentation on
 /// how much of the order to believe.
@@ -222,25 +194,16 @@ pub const UDP_BY_PREVALENCE: &[u16] = &[
 
 /// SCTP ports, most likely to be listening first.
 ///
-/// A different kind of list from the two above. SCTP is not a general-purpose
-/// transport: nearly everything that speaks it is telecom signalling, and the
-/// deployed set is closed enough to write down, so there are no tiers here and
-/// no long tail to cut. The whole catalogue is twenty-five ports, a fortieth of
-/// the TCP list, and the order is a claim all the way down rather than only at
-/// the head.
+/// Nearly everything that speaks SCTP is telecom signalling, and the deployed set is
+/// small enough to list whole: twenty-five ports, ordered all the way down, with no
+/// tiers.
 ///
-/// The front is a mobile core, which is the reason anyone scans SCTP at all:
-/// Diameter first, then the RAN interfaces an LTE or 5G deployment exposes,
-/// then the SIGTRAN adaptation layers that carry SS7 signalling over IP. Behind
-/// them is the rest of what is both registered for SCTP and still deployed:
-/// media gateway control, SIP where it is carried this way, IPFIX, whose
-/// specification names SCTP as the transport a collector must implement, and
-/// RSerPool.
+/// The front is a mobile core, the usual reason to scan SCTP: Diameter, then the RAN
+/// interfaces an LTE or 5G deployment exposes, then the SIGTRAN layers carrying SS7
+/// over IP. Then the rest of what is registered for SCTP and still deployed: media
+/// gateway control, SIP, IPFIX (whose collectors must implement SCTP), and RSerPool.
 ///
-/// What is deliberately absent is the registered-but-unused tail. A dozen more
-/// numbers claim SCTP in the IANA registry and nothing has spoken them this
-/// century, and the argument the module documentation makes about the eighties
-/// applies here with more force: a list this short is read by hand.
+/// A dozen more IANA registrations for SCTP that nothing uses are left out.
 ///
 /// Nothing reaches these ports unless a caller asked about SCTP. See
 /// [`PortSet::top_sctp`](super::PortSet::top_sctp).
@@ -275,18 +238,13 @@ pub const SCTP_BY_PREVALENCE: &[u16] = &[
     9902, // enrp over tls
 ];
 
-/// The ranks each tier of [`TCP_BY_PREVALENCE`] ends at, so the tests and the
-/// documentation cannot come to disagree about where the boundaries are.
+/// The ranks each tier of [`TCP_BY_PREVALENCE`] ends at.
 ///
-/// Public because a front end offering the choice wants the same boundaries the
-/// list was authored around rather than round numbers of its own: asking for the
-/// top 356 ports is asking for everything with a name, and asking for 400 is
-/// asking for that plus a slice of a band.
+/// Public so a front end can offer the boundaries the list was authored around: the
+/// top 375 is everything with a name, and 400 adds a slice of a band.
 pub const TCP_TIER_BOUNDS: &[usize] = &[100, 375, 647, 1000];
 
-/// The first `count` TCP ports, most likely first. Clamped to what the
-/// catalogue holds, so asking for more than there is yields all of it rather
-/// than panicking.
+/// The first `count` TCP ports, most likely first. Clamped to what the catalogue holds.
 pub fn top_tcp(count: usize) -> &'static [u16] {
     &TCP_BY_PREVALENCE[..count.min(TCP_BY_PREVALENCE.len())]
 }
@@ -316,9 +274,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// A port listed twice is a probe spent twice and a rank that means nothing.
-    /// The lists are long enough that an editor will not catch this by eye,
-    /// which is exactly why it is checked.
+    /// No port is listed twice.
     #[test]
     fn no_port_is_listed_twice() {
         for (name, list) in [
@@ -335,9 +291,7 @@ mod tests {
         }
     }
 
-    /// Past the hand-ranked head, each tier is sorted numerically. That is what
-    /// makes the list readable and searchable by hand, and it is the only
-    /// property an editor adding a port has to preserve.
+    /// Past the hand-ranked head, each tier is sorted numerically.
     #[test]
     fn every_tier_past_the_ranked_head_is_sorted() {
         let mut start = TCP_TIER_BOUNDS[0];
@@ -354,9 +308,7 @@ mod tests {
         assert!(tail.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
-    /// The boundaries the documentation quotes have to be boundaries the list
-    /// actually has. The last one is the length, which is what makes
-    /// `top_tcp(1000)` the whole catalogue rather than a truncation of it.
+    /// The tier boundaries match the list, and the last is its length.
     #[test]
     fn the_tier_bounds_describe_this_list() {
         assert_eq!(
@@ -366,9 +318,7 @@ mod tests {
         assert!(TCP_TIER_BOUNDS.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
-    /// The ports that answer on nearly everything, checked by name rather than
-    /// by count. A reordering that pushed HTTPS out of the first ten would be a
-    /// worse scan and nothing else here would notice.
+    /// The ports that answer on nearly everything stay at the top.
     #[test]
     fn the_head_of_the_list_is_what_a_scan_would_ask_first() {
         let head: HashSet<u16> = top_tcp(10).iter().copied().collect();
@@ -377,9 +327,7 @@ mod tests {
         }
     }
 
-    /// Three ports real services listen on, and the reason this module exists:
-    /// all three are outside `1-1024`, so a scan of the well-known range
-    /// reports none of them.
+    /// Three ports real services listen on, all outside `1-1024`.
     #[test]
     fn the_ports_the_well_known_range_misses_are_covered() {
         let all: HashSet<u16> = TCP_BY_PREVALENCE.iter().copied().collect();
@@ -388,16 +336,8 @@ mod tests {
         }
     }
 
-    /// The ports the full-range scan of one ordinary home server turned up that
-    /// the default one missed, and the ports a 2026 catalogue has no business
-    /// omitting.
-    ///
-    /// Bazarr is the feedback loop this list should have: a full-range scan
-    /// finds it on a machine already known to be running its three sibling
-    /// applications, all of which are in the catalogue. The two model runners
-    /// are the harder lesson: nothing finds them unless something is looking,
-    /// and a list that misses what every machine with a GPU listens on is out
-    /// of date rather than incomplete.
+    /// Ports a full-range scan of an ordinary home server found that the default missed,
+    /// including Bazarr and two local model runners.
     #[test]
     fn the_modern_self_hosted_stack_is_covered() {
         let all: HashSet<u16> = TCP_BY_PREVALENCE.iter().copied().collect();
@@ -420,9 +360,7 @@ mod tests {
         }
     }
 
-    /// Asking for more than there is yields all of it. A front end that offers
-    /// `--top-ports` passes whatever a person typed, and a panic is not the
-    /// answer to a large number.
+    /// Asking for more than there is yields all of it.
     #[test]
     fn asking_for_more_than_there_is_yields_all_of_it() {
         assert_eq!(top_tcp(usize::MAX).len(), TCP_BY_PREVALENCE.len());

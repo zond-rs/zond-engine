@@ -12,34 +12,24 @@
 //! evidence behind it: which packet decided it, when, how long it took to
 //! arrive, the hop counter it carried, and who sent it.
 //!
-//! Kept beside the verdict rather than folded into it because the two are read
-//! by different people for different reasons. A report renders the verdict; an
-//! operator who does not believe the verdict reads this. A TTL of 64 against a
-//! host three hops away, or a `Closed` sourced from an address that is not the
-//! target's, is how a wrong answer is caught, and none of it is recoverable
-//! once the state has been recorded on its own.
+//! A report renders the verdict; an operator who doubts it reads this. A TTL of 64 from
+//! a host three hops away, or a `Closed` sourced from an address that is not the
+//! target's, is how a wrong answer is caught.
 //!
-//! Everything except the reason is optional, because an unprivileged connect
-//! attempt knows only that it succeeded or failed: there is no header to read a
-//! TTL or a sender from.
+//! Everything but the reason is optional, since an unprivileged connect attempt has no
+//! header to read a TTL or sender from.
 //!
 //! ## Who sent the reply
 //!
-//! [`source_ip`](Discovery::source_ip) is the reply's sender, the source
-//! address in its IP header, and never an address of this machine. It says
-//! something only where it is not the target's own: an ICMP error from a
-//! router or firewall on the path is a fact about the path rather than about
-//! the port. It is the fact a host's
-//! [`EvidenceSource`](crate::model::host::EvidenceSource) records about the
-//! evidence it is alive, taken one level down to a single port.
+//! [`source_ip`](Discovery::source_ip) is the source address in the reply's IP header,
+//! never this machine's. It matters where it is not the target's: an ICMP error from a
+//! router or firewall is a fact about the path. It is the per-port counterpart of a
+//! host's [`EvidenceSource`](crate::model::host::EvidenceSource).
 //!
-//! No scanner in this crate fills it, and it arrives only on a record read
-//! back from a document that carries one. A sender can be an address the
-//! scan's exclusions forbid the report to name, so a scanner that records one
-//! has to withhold an excluded sender the way
-//! [`EvidenceSource::Withheld`](crate::model::host::EvidenceSource::Withheld)
-//! does for a host's evidence, and `tests/hygiene/exclusions.rs` holds every
-//! writer of the field to saying how.
+//! No scanner in this crate fills it; it arrives only on a record read back from a
+//! document. A scanner that records one must withhold an excluded sender as
+//! [`EvidenceSource::Withheld`](crate::model::host::EvidenceSource::Withheld) does, and
+//! `tests/hygiene/exclusions.rs` holds every writer of the field to that.
 
 use std::{
     net::IpAddr,
@@ -48,14 +38,9 @@ use std::{
 
 /// The packet that settled a port's state, named rather than interpreted.
 ///
-/// What any of these *means* depends on the probe that provoked it, which is
+/// What these *mean* depends on the probe that provoked them, which is
 /// [`TcpScanTechnique::verdict`](crate::model::technique::TcpScanTechnique::verdict)'s
-/// job. Recording the segment rather than the conclusion is what lets a reader
-/// disagree with the conclusion.
-///
-/// `#[non_exhaustive]`: a scan learns to recognise new replies as it learns to
-/// send new probes, and a consumer matching on this should pay for that with a
-/// recompile rather than with a major version.
+/// job. Recording the packet lets a reader disagree with the conclusion.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ScanResponse {
@@ -64,28 +49,19 @@ pub enum ScanResponse {
     /// A TCP SYN/ACK from this endpoint to **somebody else**, read off the wire
     /// without anything having been sent to it.
     ///
-    /// It establishes what [`TcpSynAck`](Self::TcpSynAck) does, that a listener
-    /// accepted a connection, and is in one respect the stronger evidence, since
-    /// what it accepted was a real client rather than a knock.
-    /// Kept apart because it answers a narrower question: the endpoint served
-    /// *that* peer over *that* path, and nothing here says it would answer this
-    /// machine. A scan and a listener disagreeing about one port is a finding
-    /// rather than a contradiction, and a reader can only see it if the two are
-    /// named apart.
+    /// Establishes what [`TcpSynAck`](Self::TcpSynAck) does, from a real client. It
+    /// says nothing about whether the endpoint would answer this machine, so a scan and
+    /// a listener disagreeing about a port is a finding.
     OverheardSynAck,
     /// Received a TCP RST (Port is Closed or Blocked).
     TcpRst,
     /// A connection the operating system refused: a TCP RST or an ICMP port
     /// unreachable, which it reports alike.
     ///
-    /// What a connect made through the operating system's own TCP learns where
-    /// a raw probe would read [`TcpRst`](Self::TcpRst). Named apart because
-    /// the two packets mean different things, a reset is a stack with nothing
-    /// listening and a port unreachable answering a TCP probe is a filter
-    /// rejecting it, and a connect is handed the same error for either, with
-    /// neither the packet nor its sender. Most refusals are resets, which is
-    /// why the port is read closed; this says the reading rests on a refusal
-    /// rather than on a packet anybody saw.
+    /// What a connect through the operating system's TCP learns where a raw probe would
+    /// read [`TcpRst`](Self::TcpRst). A reset means nothing is listening and a port
+    /// unreachable means a filter, but a connect gets the same error for both and sees
+    /// neither packet. Most refusals are resets, so the port is read closed.
     ConnectionRefused,
     /// Received a valid protocol response to a UDP payload.
     UdpResponse,
@@ -108,10 +84,8 @@ pub enum ScanResponse {
 /// The evidence behind a port's state: which packet decided it, when, how long
 /// it took, and who sent it.
 ///
-/// The two times answer different questions and neither substitutes for the
-/// other. `timestamp` places the finding on a timeline a person reads, so it is
-/// wall-clock. `rtt` is measured elapsed time, and stays correct across a clock
-/// adjustment mid-scan because it was never derived from the clock.
+/// `timestamp` is wall-clock, for placing the finding on a timeline. `rtt` is measured
+/// elapsed time, unaffected by a clock adjustment mid-scan.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
@@ -126,24 +100,18 @@ pub struct Discovery {
     /// connect attempt that measured no round trip of its own.
     rtt: Option<Duration>,
 
-    /// The TTL the reply carried, which bounds how many hops away its sender
-    /// is. A value inconsistent with the target's distance is how a forged or
-    /// middlebox-generated reply is caught.
+    /// The TTL the reply carried, which bounds its sender's distance. A value
+    /// inconsistent with the target's distance exposes a forged or middlebox reply.
     ttl: Option<u8>,
 
-    /// The reply's sender: the source address in its IP header, never an
-    /// address of this machine. Worth recording where it is not the target's,
-    /// since a verdict sent by something on the path says something about the
-    /// path rather than about the port.
+    /// The source address in the reply's IP header. See the module documentation.
     source_ip: Option<IpAddr>,
 }
 
 impl Discovery {
     /// Records that `reason` settled a port's state, as of now.
     ///
-    /// Everything else is optional and attached by the builder methods below,
-    /// because an unprivileged connect attempt knows only that it succeeded or
-    /// failed: there is no header to read a TTL or a sender from.
+    /// Everything else is optional and attached by the builder methods below.
     ///
     /// # Examples
     ///
@@ -165,9 +133,7 @@ impl Discovery {
 
     /// Restores the time this packet arrived.
     ///
-    /// [`new`](Self::new) stamps the current time, which is what a scan wants
-    /// and what a rebuild does not: the timestamp is when the reply that settled
-    /// this port arrived, not when the record of it was read.
+    /// For a rebuild; [`new`](Self::new) stamps the current time.
     pub fn seen_at(mut self, timestamp: SystemTime) -> Self {
         self.timestamp = timestamp;
         self
@@ -194,8 +160,7 @@ impl Discovery {
     }
 
     /// The reply's sender, the source address its IP header carried, if that
-    /// was recorded. See the [module documentation](self) for what it is worth
-    /// and what a scanner recording it owes the exclusion policy.
+    /// was recorded. See the [module documentation](self).
     pub fn source_ip(&self) -> Option<IpAddr> {
         self.source_ip
     }
@@ -236,8 +201,7 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
-    /// Everything but the reason is optional and arrives separately, so the
-    /// builders have to compose without any of them displacing another.
+    /// The builders compose without displacing one another.
     #[test]
     fn the_optional_evidence_composes_without_displacing_the_reason() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));

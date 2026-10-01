@@ -12,17 +12,13 @@
 //! version and cipher agreed, the protocols offered over ALPN, and a summary of
 //! the certificate presented.
 //!
-//! The certificate is summarized, not stored. A chain is kilobytes and a
-//! report may hold thousands; what a reader acts on is the name it was issued
-//! to, who issued it, when it expires and its fingerprint, so those are kept
-//! and the DER is not. A caller needing the chain itself has to re-fetch it,
-//! which is the right trade for a record meant to be written to a file and read
-//! later.
+//! The certificate is summarized: a chain is kilobytes and a report may hold thousands,
+//! so the name, issuer, validity and fingerprint are kept and the DER is not. A caller
+//! needing the chain re-fetches it.
 //!
-//! Validity is reported against a time the caller supplies rather than assumed
-//! from the clock; see [`Security::is_cert_valid_at`]. A scan is read long
-//! after it ran, and "expired" answered from the current time would relabel a
-//! report every time it was opened.
+//! Validity is checked against a time the caller supplies; see
+//! [`Security::is_cert_valid_at`]. A report is read long after the scan, and the current
+//! time would relabel it on every opening.
 
 use std::net::IpAddr;
 use std::sync::{Arc, OnceLock};
@@ -40,9 +36,7 @@ use std::time::{Duration, SystemTime};
 pub struct Security {
     /// The TLS version negotiated, such as `"TLSv1.3"`.
     ///
-    /// Shared rather than owned: a scan of any size negotiates the same two or
-    /// three versions and the same handful of cipher suites across every TLS
-    /// port it touches.
+    /// Shared, since a scan sees the same few versions and suites everywhere.
     tls_version: Option<Arc<str>>,
 
     /// The cipher suite the server selected, such as
@@ -57,14 +51,11 @@ pub struct Security {
 
     /// What the endpoint turned out to *accept*, where a scan asked.
     ///
-    /// A different fact from every field above it, and the reason the two sit
-    /// together: those record what one handshake negotiated, and this records
-    /// what the endpoint would negotiate given the choice. A port reporting
-    /// `TLSv1.3` above and TLS 1.0 here is not a contradiction; it is a server
-    /// that prefers the modern version and still accepts the withdrawn one,
-    /// which is the configuration an audit is looking for.
+    /// The fields above record what one handshake negotiated; this records what the
+    /// endpoint would negotiate. `TLSv1.3` above with TLS 1.0 here is a server that
+    /// prefers the modern version and still accepts the withdrawn one.
     ///
-    /// Empty for every scan that did not ask. See
+    /// Empty unless a scan asked. See
     /// [`ZondConfig::tls_enumeration`](crate::config::ZondConfig::tls_enumeration).
     support: TlsSupport,
 }
@@ -131,8 +122,7 @@ impl Security {
 
     /// Records an ALPN protocol, if it is not already recorded.
     ///
-    /// Takes `&mut self`, so a record already attached to a port can be added
-    /// to; [`with_alpn`](Self::with_alpn) is the builder form.
+    /// [`with_alpn`](Self::with_alpn) is the builder form.
     pub fn add_alpn(&mut self, protocol: impl Into<Arc<str>>) {
         let protocol = protocol.into();
         if !self.alpn.contains(&protocol) {
@@ -154,28 +144,13 @@ impl Security {
 
     /// Folds another handshake's account of this endpoint into this one.
     ///
-    /// Every field the handshake recorded fills a gap and displaces nothing: the
-    /// version, the cipher suite and the certificate are kept where they are
-    /// already recorded, and the ALPN lists union without repeating. That is
-    /// the module's rule that a tie keeps what is on record, applied to a type
-    /// where there is no confidence to break the tie with, since a completed
-    /// handshake is a completed handshake.
+    /// The version, cipher suite and certificate only fill gaps, and ALPN lists union.
     ///
-    /// What the endpoint [accepts](Self::support) has something to break the
-    /// tie with, which is whether each version's walk finished. It folds
-    /// version by version, and the account on record stands unless the other is
-    /// the more complete and found every suite this one did: a walk that
-    /// finished over one cut short, or of two cut short, the one that got
-    /// further. A walk on record that found a suite the other does not list was
-    /// answered by a different configuration from the other's, so the two are
-    /// not accounts of one answer and it stands. Each version comes whole from
-    /// one account.
+    /// What the endpoint [accepts](Self::support) folds version by version, as
+    /// `TlsSupport`'s merge describes: the account on record stands unless the other is
+    /// more complete and found every suite this one did.
     pub fn merge(&mut self, other: Security) {
-        // Destructured rather than reached through `other.…`, so a field added
-        // to this struct is a compile error here and not a value that quietly
-        // stops being folded. The doc above names every field for the same
-        // reason, the certificate included, which is the field a caller is most
-        // likely to be reading the record for.
+        // Destructured, so a new field fails to compile until it is merged.
         let Security {
             tls_version,
             cipher_suite,
@@ -201,24 +176,16 @@ impl Security {
     /// account of the same endpoint, or `None` where the finding is not one
     /// drawn from evidence a record like this holds.
     ///
-    /// Two derivations draw from it. What the endpoint accepts is one, and
-    /// [`TlsSupport::standing`] says what a claim drawn from it rests on. The
-    /// certificate's posture is the other, and a claim drawn from it rests on
-    /// the certificate as a whole: whether it lapsed, names its own issuer or
-    /// carries a short key is a property of those bytes, and whether it names
-    /// the host asked for is one of those bytes and the name the target gave,
-    /// which a job does not change between sittings. So this record upholds
-    /// the claim while it holds the same certificate and overturned it once it
-    /// holds another. A certificate with no fingerprint cannot be told from
-    /// another, and a claim resting on one has no standing.
+    /// Two derivations draw from it. For what the endpoint accepts, see
+    /// [`TlsSupport::standing`]. A certificate-posture claim rests on the certificate
+    /// as a whole (lapsed, self-issued, short key, or not naming the host asked for,
+    /// which does not change between sittings), so the record upholds it while it holds
+    /// the same certificate and overturns it once it holds another. A certificate with
+    /// no fingerprint cannot be compared, so a claim resting on it has no standing.
     ///
-    /// A record holding no certificate it can tell apart leaves the claim
-    /// unsettled, as a record holding no walk does one drawn from what the
-    /// endpoint accepts. The service pass writes no security at all where the
-    /// handshake failed and no certificate where the leaf would not parse, so
-    /// the absence says what this scan was shown, not what the endpoint
-    /// presents: read as a different certificate, one handshake that timed out
-    /// would retire every posture claim on the endpoint.
+    /// A record with no comparable certificate leaves the claim unsettled: a failed
+    /// handshake or an unparseable leaf records nothing, and must not retire every
+    /// posture claim on the endpoint.
     pub(crate) fn standing(&self, finding: &Finding, basis: &Security) -> Option<Standing> {
         if finding.detection().id() == CERTIFICATE_DETECTION {
             fn fingerprint(security: &Security) -> Option<&str> {
@@ -241,12 +208,9 @@ impl Security {
     /// The excerpt `finding`, drawn from `basis`, should carry beside this
     /// record, or `None` where the one it was written with already fits.
     ///
-    /// Only a claim drawn from what the endpoint accepts can need one: its
-    /// excerpt lists suites under versions, and this record may hold other
-    /// accounts of those versions than `basis` did. [`TlsSupport::restate`]
-    /// says how it is worded. A posture claim this record upholds rests on the
-    /// same certificate, and its excerpt, drawn from those bytes, already
-    /// fits.
+    /// Only a claim drawn from what the endpoint accepts can need one; see
+    /// [`TlsSupport::restate`]. An upheld posture claim rests on the same certificate,
+    /// so its excerpt still fits.
     pub(crate) fn restate(&self, finding: &Finding, basis: &Security) -> Option<Excerpt> {
         if finding.detection().id() == CERTIFICATE_DETECTION {
             return None;
@@ -256,19 +220,16 @@ impl Security {
 
     /// Whether the certificate is valid *now*, by this machine's clock.
     ///
-    /// For a caller acting on a live scan. Anything reading a scan back
-    /// afterwards wants [`is_cert_valid_at`](Self::is_cert_valid_at) with the
-    /// time the scan ran, or the same report answers differently every time it
-    /// is opened.
+    /// For a live scan. Reading a scan back, use
+    /// [`is_cert_valid_at`](Self::is_cert_valid_at) with the time it ran.
     pub fn is_cert_valid(&self) -> bool {
         self.is_cert_valid_at(SystemTime::now())
     }
 
     /// Whether the certificate is valid at `target_time`.
     ///
-    /// `false` for a certificate that is expired, not yet valid, or absent. The
-    /// three are different, and a caller that needs to tell them apart reads
-    /// [`certificate`](Self::certificate) directly.
+    /// `false` for a certificate that is expired, not yet valid, or absent; read
+    /// [`certificate`](Self::certificate) to tell which.
     pub fn is_cert_valid_at(&self, target_time: SystemTime) -> bool {
         self.certificate
             .as_ref()
@@ -277,9 +238,8 @@ impl Security {
 
     /// Returns `true` if the certificate is currently valid, but expires within the given threshold.
     ///
-    /// A certificate that has *already* expired is not expiring: it is a
-    /// different problem, reported by [`is_cert_valid`](Self::is_cert_valid),
-    /// and folding the two together would bury an outage in a renewal queue.
+    /// A certificate that has *already* expired is not expiring; that is
+    /// [`is_cert_valid`](Self::is_cert_valid)'s concern.
     ///
     /// # Examples
     ///
@@ -309,17 +269,11 @@ impl Security {
     /// Whether the certificate is valid at `at` and expires within `threshold`
     /// of it.
     ///
-    /// The counterpart of [`is_cert_valid_at`](Self::is_cert_valid_at), and the
-    /// one to use on a stored scan. "Expires within thirty days" is a question
-    /// about a moment, and the moment a report is *read* is not the moment it
-    /// was taken: asked with the current time, a scan from last quarter reports
-    /// a renewal queue that was never true of the network it describes.
-    /// A `threshold` no clock can reach reads as one that covers everything, and
-    /// never as a panic. `SystemTime + Duration` is checked because the threshold
-    /// arrives from a caller and [`DiffOptions::with_expiry_threshold`] takes any
-    /// `Duration` there is. A horizon past the end of representable time is a
-    /// caller saying every certificate is on the queue, which is an answer rather
-    /// than an error.
+    /// The counterpart of [`is_cert_valid_at`](Self::is_cert_valid_at), for a stored
+    /// scan.
+    ///
+    /// A `threshold` past the end of representable time covers everything; it does
+    /// not panic, since [`DiffOptions::with_expiry_threshold`] accepts any `Duration`.
     ///
     /// [`DiffOptions::with_expiry_threshold`]: crate::diff::DiffOptions::with_expiry_threshold
     pub fn is_cert_expiring_at(&self, threshold: Duration, at: SystemTime) -> bool {
@@ -345,23 +299,14 @@ impl Default for Security {
 /// The most Subject Alternative Names one certificate will have recorded
 /// against it.
 ///
-/// A bound on what a single target can make this process allocate. The names
-/// come out of a certificate the scanned host presented, so their number is the
-/// host's to choose, and without this the only thing standing between it and
-/// an unbounded list would be whatever the TLS layer admits as a handshake
-/// message, which is not a bound this crate states. A `Security` is held per
-/// port and a port per host.
+/// Bounds what a single target can make this process allocate, since the scanned host
+/// chooses how many names its certificate carries.
 ///
-/// A hundred is past what a real certificate carries. A wildcard covers a domain
-/// in one name, and the shared-hosting certificates that do enumerate carry tens
-/// rather than hundreds; past that the list has stopped describing what the
-/// endpoint is for. The same argument [`MAX_CPES_PER_SERVICE`] makes, about the
-/// other thing on a port that a target writes.
+/// A hundred is more than a real certificate carries: a wildcard covers a domain in
+/// one name, and shared-hosting certificates carry tens. Compare
+/// [`MAX_CPES_PER_SERVICE`].
 ///
-/// Over-length lists are truncated rather than refused, as an
-/// [`Excerpt`] is: the names are evidence, and
-/// dropping a certificate because it carried too many would lose the whole
-/// finding over the part of it that ran long.
+/// Over-length lists are truncated, as an [`Excerpt`] is, so the certificate is kept.
 ///
 /// [`MAX_CPES_PER_SERVICE`]: crate::model::port::service::MAX_CPES_PER_SERVICE
 pub const MAX_SANS_PER_CERTIFICATE: usize = 100;
@@ -379,8 +324,7 @@ pub struct CertificateInfo {
 
     /// The Common Name of the issuing authority.
     ///
-    /// Shared rather than owned, because an estate's certificates come from a
-    /// handful of issuers and most of them from one internal CA.
+    /// Shared, since most certificates come from a handful of issuers.
     issuer: Arc<str>,
 
     /// The timestamp when the certificate becomes valid.
@@ -403,12 +347,8 @@ impl CertificateInfo {
     /// Creates a certificate record from what identifies it: who it is for,
     /// who issued it, the window it is valid in, and its fingerprint.
     ///
-    /// The names it also claims and the key it carries are attached with
-    /// [`with_sans`](Self::with_sans) and
-    /// [`with_public_key`](Self::with_public_key). Splitting them off keeps the
-    /// required arguments few enough to read at a call site, where eight
-    /// positional ones included two adjacent `SystemTime`s that could be
-    /// swapped without any diagnostic.
+    /// Further names and the key are attached with [`with_sans`](Self::with_sans) and
+    /// [`with_public_key`](Self::with_public_key).
     pub fn new(
         common_name: impl Into<Arc<str>>,
         issuer: impl Into<Arc<str>>,
@@ -431,7 +371,7 @@ impl CertificateInfo {
     /// Attaches the other names the certificate claims, up to
     /// [`MAX_SANS_PER_CERTIFICATE`].
     ///
-    /// Truncated rather than refused, for the reason the bound gives.
+    /// Truncated past the bound.
     pub fn with_sans(mut self, sans: impl IntoIterator<Item = Arc<str>>) -> Self {
         self.sans = sans.into_iter().take(MAX_SANS_PER_CERTIFICATE).collect();
         self
@@ -439,9 +379,8 @@ impl CertificateInfo {
 
     /// Builder method to attach the public key's algorithm and size in bits.
     ///
-    /// Both together, because neither is worth much alone: `2048` means nothing
-    /// without knowing it is RSA, and a size of zero is how an unparseable key
-    /// is reported.
+    /// Both together, since `2048` means little without the algorithm. A size of zero
+    /// reports an unparseable key.
     pub fn with_public_key(mut self, kind: impl Into<Arc<str>>, bits: u32) -> Self {
         self.pubkey_type = kind.into();
         self.pubkey_bits = bits;
@@ -489,22 +428,15 @@ impl CertificateInfo {
     }
 
     /// What is wrong with this certificate's own posture at `at`, one finding per
-    /// problem, derived from what the handshake already produced: no probe of its
-    /// own.
+    /// problem, derived from the handshake without a probe of its own.
     ///
-    /// Three checks the parsed fields settle on their own: a certificate past its
-    /// validity window (CWE-324); one whose issuer names its own subject, a
-    /// heuristic on the common names and so a `Probable` self-signed rather than a
-    /// certain one (CWE-295); and an RSA key below the 2048-bit floor, gated on the
-    /// key type so an elliptic-curve key is not judged against an RSA floor
-    /// (CWE-326).
+    /// Three checks: past its validity window (CWE-324); issuer naming its own subject,
+    /// a heuristic on common names and so a `Probable` self-signed (CWE-295); and an
+    /// RSA key below 2048 bits, checked only for RSA keys (CWE-326).
     ///
-    /// Whether the certificate answers to the name a client asked for is not a
-    /// property of the certificate alone, and is
-    /// [`name_mismatch`](Self::name_mismatch). The signature algorithm is not
-    /// checked, not being among the fields parsed here. A not-yet-valid
-    /// certificate is left alone too: a scanner clock running ahead is the
-    /// likelier cause, and flagging it would cry wolf.
+    /// The name check is [`name_mismatch`](Self::name_mismatch). The signature
+    /// algorithm is not parsed, so not checked. A not-yet-valid certificate is not
+    /// flagged, since a scanner clock running ahead is the likelier cause.
     pub fn findings(&self, at: SystemTime) -> Vec<Finding> {
         let mut findings = Vec::new();
         let id = certificate_detection_id();
@@ -577,13 +509,11 @@ impl CertificateInfo {
     /// whose leftmost label is a lone `*` covers any one label in its place and
     /// no more, so `*.example.com` covers `www.example.com` and neither
     /// `example.com` nor `a.b.example.com`. An address is held against the
-    /// addresses in the same extension. The subject's common name is not read:
-    /// RFC 9525 forbids a client to, and current TLS clients refuse a
-    /// certificate that names a host only there.
+    /// addresses in the same extension. The subject's common name is not read, as RFC
+    /// 9525 requires of clients.
     ///
-    /// Only the names this record kept are read, up to
-    /// [`MAX_SANS_PER_CERTIFICATE`], so a certificate claiming more than that
-    /// may cover a name this says it does not.
+    /// Only the names kept (up to [`MAX_SANS_PER_CERTIFICATE`]) are read, so a
+    /// certificate claiming more may cover a name this says it does not.
     pub fn covers(&self, name: &str) -> bool {
         let name = name.strip_suffix('.').unwrap_or(name);
         if let Ok(address) = name.parse::<IpAddr>() {
@@ -601,15 +531,11 @@ impl CertificateInfo {
     /// The finding that this certificate does not answer to `name`, the host
     /// name the handshake that presented it asked for, or `None` where it does.
     ///
-    /// Held apart from [`findings`](Self::findings) because it is a fact about
-    /// the certificate and a name together: an endpoint reached by its address
-    /// was asked for no name, and a certificate that is wrong for one site
-    /// behind a shared address is right for another. So it is asked only with
-    /// the name a client put in the handshake's server name, where a client
-    /// connecting by that name would refuse the certificate.
+    /// Separate from [`findings`](Self::findings) because it depends on the name: a
+    /// certificate wrong for one site behind a shared address is right for another.
+    /// Ask it only with the server name the handshake sent.
     ///
-    /// Also `None` where the certificate claims as many names as this record
-    /// keeps, since the one that covers `name` may be among those it dropped;
+    /// Also `None` where the certificate claims as many names as this record keeps;
     /// see [`covers`](Self::covers).
     pub fn name_mismatch(&self, name: &str) -> Option<Finding> {
         if self.sans.len() >= MAX_SANS_PER_CERTIFICATE || self.covers(name) {
@@ -667,9 +593,8 @@ const CERTIFICATE_DETECTION: &str = "zond:certificate";
 
 /// The identity the certificate-posture findings are stamped with.
 ///
-/// A built-in derivation like the TLS-suite one, so its content hash is taken
-/// over the checks it runs rather than a dataset: changing the set moves the hash,
-/// and two reports drawn by different rules can be told apart.
+/// A built-in derivation like the TLS-suite one, so its content hash covers the checks
+/// it runs.
 fn certificate_detection_id() -> DetectionId {
     static ID: OnceLock<DetectionId> = OnceLock::new();
     ID.get_or_init(|| {
@@ -702,17 +627,7 @@ fn certificate_detection_id() -> DetectionId {
 mod tests {
     use super::*;
 
-    /// The names on a certificate are the scanned host's to choose, so the list
-    /// needs a bound this crate decides.
-    ///
-    /// `subject_alt_names` collects every DNS and IP name in the extension and
-    /// hands the vector straight here, so without one the only ceiling would be
-    /// whatever the TLS layer admits as a handshake message, which is not
-    /// something this crate states. A `Security` is held per port and a port per
-    /// host.
-    ///
-    /// Truncated rather than refused, so a certificate is not lost over the part
-    /// of it that ran long.
+    /// The SAN list is bounded and truncated, not refused.
     #[test]
     fn a_certificates_names_are_held_to_the_bound() {
         let many: Vec<Arc<str>> = (0..MAX_SANS_PER_CERTIFICATE * 3)
@@ -761,9 +676,7 @@ mod tests {
             .with_public_key("RSA", 2048)
     }
 
-    /// ALPN is a list where the rest are single values, and it deduplicates on
-    /// the way in, since a server offering the same protocol twice is offering
-    /// one protocol.
+    /// ALPN deduplicates on the way in.
     #[test]
     fn a_record_carries_what_the_handshake_agreed() {
         let sec = Security::new()
@@ -777,9 +690,7 @@ mod tests {
         assert_eq!(sec.alpn().len(), 2);
     }
 
-    /// Two probes of one endpoint may each have completed a different part of
-    /// the handshake. A merge fills what is missing and keeps what is held,
-    /// which is the rule every merge in this module follows.
+    /// A merge fills what is missing and keeps what is held.
     #[test]
     fn a_merge_fills_the_gaps_without_displacing_what_is_recorded() {
         let mut s1 = Security::new()
@@ -789,7 +700,7 @@ mod tests {
         let s2 = Security::new()
             .with_cipher_suite("AES128-GCM")
             .with_alpn("h2")
-            .with_alpn("http/1.1"); // Should be deduplicated
+            .with_alpn("http/1.1"); // deduplicated
 
         s1.merge(s2);
 
@@ -799,10 +710,7 @@ mod tests {
         assert!(s1.alpn().iter().any(|p| &**p == "h2"));
     }
 
-    /// Both questions have to be answerable against the time the scan ran, or a
-    /// stored report answers differently every time it is opened. With only a
-    /// wall-clock form of expiry, a report from last quarter would describe a
-    /// renewal queue that was never true of the network it recorded.
+    /// Both checks can be asked at the time the scan ran.
     #[test]
     fn validity_and_expiry_are_both_answerable_at_a_caller_chosen_time() {
         let day = Duration::from_secs(86_400);
@@ -823,17 +731,14 @@ mod tests {
         );
         assert!(!security.is_cert_expiring_at(day * 5, scanned_at));
 
-        // Read a year later, the same record says the certificate had already
-        // expired, and an expired certificate is not an expiring one.
+        // A year later it has expired, which is not expiring.
         let read_at = scanned_at + day * 365;
         assert!(!security.is_cert_valid_at(read_at));
         assert!(!security.is_cert_expiring_at(day * 30, read_at));
     }
 
-    /// The three states a certificate can be in against the current clock, and
-    /// the distinction that matters most: an already-expired certificate is not
-    /// an expiring one. Folding the two together buries an outage in a renewal
-    /// queue.
+    /// Valid, expired and not-yet-valid against the current clock; an expired
+    /// certificate is not expiring.
     #[test]
     fn an_expired_certificate_is_not_reported_as_one_about_to_expire() {
         // Valid from 10 days ago until 10 days from now
@@ -841,9 +746,9 @@ mod tests {
         let sec_valid = Security::new().with_certificate(valid_cert);
 
         assert!(sec_valid.is_cert_valid());
-        // Threshold check: Does it expire in the next 5 days? No.
+        // Not within 5 days.
         assert!(!sec_valid.is_cert_expiring(Duration::from_secs(86400 * 5)));
-        // Threshold check: Does it expire in the next 15 days? Yes.
+        // Within 15 days.
         assert!(sec_valid.is_cert_expiring(Duration::from_secs(86400 * 15)));
 
         // Expired 5 days ago
@@ -851,7 +756,7 @@ mod tests {
         let sec_expired = Security::new().with_certificate(expired_cert);
 
         assert!(!sec_expired.is_cert_valid());
-        // An already expired cert shouldn't trigger "expiring soon" alerts
+        // An expired certificate is not expiring.
         assert!(!sec_expired.is_cert_expiring(Duration::from_secs(86400 * 30)));
 
         // Not yet valid (starts tomorrow)
@@ -949,9 +854,7 @@ mod tests {
         .with_public_key("RSA", 2048)
     }
 
-    /// The names a certificate covers are the ones a client connecting by name
-    /// would accept it for, so a mismatch reported is one a browser would
-    /// refuse and a match one it would take.
+    /// The names covered are the ones a client connecting by name would accept.
     #[test]
     fn a_certificate_covers_the_names_a_client_would_accept_it_for() {
         let cert = naming("ignored.example", &["www.example.com", "*.api.example.com"]);
@@ -977,8 +880,8 @@ mod tests {
         assert!(!addressed.covers("192.0.2.8"));
     }
 
-    /// A certificate that does not name the host asked for is a finding, and
-    /// one that does, or that may have named it past the names kept, is none.
+    /// A certificate not naming the host asked for is a finding, unless it may have
+    /// named it past the names kept.
     #[test]
     fn a_certificate_not_naming_the_host_asked_for_is_a_mismatch() {
         let cert = naming("web.example", &["web.example", "www.web.example"]);
@@ -994,7 +897,7 @@ mod tests {
         assert!(excerpt.contains("shop.example"), "{excerpt}");
         assert!(excerpt.contains("web.example"), "{excerpt}");
 
-        // Named only where clients no longer look, which the excerpt says.
+        // Named only in the common name, which the excerpt says.
         let legacy = naming("legacy.example", &[]);
         let finding = legacy
             .name_mismatch("legacy.example")
@@ -1002,7 +905,7 @@ mod tests {
         let excerpt = finding.excerpt().as_str();
         assert!(excerpt.contains("common name"), "{excerpt}");
 
-        // As many names as a record keeps: the covering one may be past them.
+        // At the bound, the covering name may have been dropped.
         let many: Vec<String> = (0..MAX_SANS_PER_CERTIFICATE)
             .map(|i| format!("n{i}.example"))
             .collect();

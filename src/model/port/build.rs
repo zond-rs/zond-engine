@@ -8,52 +8,37 @@
 
 //! # Who built the software, and which build it is
 //!
-//! A version says which release of the source a program was built from. It
-//! does not say which fixes the program carries, and for most software on a
-//! Linux server those are two different questions: a distribution fixes a
-//! vulnerability by applying the patch to the release it already ships and
-//! publishing a new *package* revision, leaving the upstream version where it
-//! was. `OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13` is OpenSSH 6.6.1p1 as Ubuntu 14.04
-//! last built it, and carries every fix Ubuntu made to 6.6 up to that build.
+//! A version says which source release a program was built from, not which fixes it
+//! carries. A distribution fixes a vulnerability by patching the release it ships and
+//! publishing a new *package* revision, leaving the upstream version unchanged.
+//! `OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13` is OpenSSH 6.6.1p1 as Ubuntu 14.04 last built
+//! it, with every fix Ubuntu made up to that build.
 //!
-//! So a vulnerability database keyed on the upstream version answers the wrong
-//! question about it, confidently. The [`Build`] a service carries is what lets
-//! the right question be asked: it names the [`Distributor`] whose fix data
-//! applies, the package revision that fixes are published against, and the
-//! [`Release`] whose fix data applies, since the same revision means nothing
-//! outside the release it was published for.
+//! A vulnerability database keyed on the upstream version gets that wrong. A [`Build`]
+//! names the [`Distributor`] whose fix data applies, the package revision fixes are
+//! published against, and the [`Release`] the revision belongs to.
 //!
-//! ## Each part is optional except the distributor
+//! ## Only the distributor is required
 //!
-//! A banner states as much as its daemon chose to. An OpenSSH banner on Debian
-//! or Ubuntu carries the whole revision; `Server: Apache/2.4.7 (Ubuntu)` says
-//! only who packaged it. That is still worth recording, and it is the more
-//! common case: it separates *this is the upstream release* from *this is a
-//! distribution's build whose patch level is not visible*, and a report
-//! owes its reader that distinction even where it can go no further.
+//! An OpenSSH banner on Debian or Ubuntu carries the whole revision;
+//! `Server: Apache/2.4.7 (Ubuntu)` says only who packaged it. That is the more common
+//! case, and still separates the upstream release from a distribution build whose
+//! patch level is not visible.
 //!
 //! ## Where the release comes from
 //!
-//! Recorded with the [`ReleaseBasis`] it rests on, because the sources differ in
-//! strength. A revision that encodes its release (`+deb12u3`,
-//! `0ubuntu0.22.04.1`) states it; a rule that maps a whole banner to a release
-//! infers it from what that release shipped. Where two sources disagree the
-//! release is left unknown rather than chosen, since both answers are about the
-//! same build and one of them has to be wrong.
+//! Each release records its [`ReleaseBasis`]. A revision that encodes its release
+//! (`+deb12u3`, `0ubuntu0.22.04.1`) states it; a rule mapping a whole banner to a
+//! release infers it. Where two sources disagree the release is left unknown.
 
 use std::sync::Arc;
 
 /// Who built and packaged the software.
 ///
-/// The distributions whose builds a service banner names often enough to be
-/// worth telling apart. Debian's and Ubuntu's banners carry package revisions
-/// and both publish per-release fix data; the rest are recorded so a report
-/// can say a service is a distribution build even where no data can place
-/// the build further.
-///
-/// The enum is `#[non_exhaustive]` so that adding a distributor costs a
-/// recompile rather than a major version; [`ALL`](Self::ALL) is the list to
-/// iterate.
+/// The distributions service banners name often enough to tell apart. Debian's and
+/// Ubuntu's banners carry package revisions and both publish per-release fix data; the
+/// rest let a report say a service is a distribution build. [`ALL`](Self::ALL) is the
+/// list to iterate.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum Distributor {
@@ -105,9 +90,8 @@ impl Distributor {
 
     /// The name a person reads.
     ///
-    /// Separate from the wire name in [`record::wire`](crate::record::wire),
-    /// as every model enum's label is: this one may be reworded, that one may
-    /// not.
+    /// Separate from the wire name in [`record::wire`](crate::record::wire): this may be
+    /// reworded, that may not.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Debian => "Debian",
@@ -128,11 +112,10 @@ impl Distributor {
 
     /// The distributor a banner or a rule names, spelled as banners spell it.
     ///
-    /// Case-insensitive, and accepting the spellings daemons actually print:
-    /// `Ubuntu` in an OpenSSH comment, `Red Hat Enterprise Linux` in an Apache
-    /// `Server` header, `CentOS` in both. [`None`] for anything else, which is
-    /// how a word in the same position that names no distributor (`Unix`,
-    /// `Win64`, an HPN patch tag) is told apart from one that does.
+    /// Case-insensitive, accepting the spellings daemons print: `Ubuntu` in an OpenSSH
+    /// comment, `Red Hat Enterprise Linux` in an Apache `Server` header, `CentOS` in
+    /// both. [`None`] for other words in that position (`Unix`, `Win64`, an HPN patch
+    /// tag).
     pub fn from_name(name: &str) -> Option<Self> {
         let name = name.trim().to_ascii_lowercase();
         Some(match name.as_str() {
@@ -170,8 +153,7 @@ pub struct Release {
 
 impl Release {
     /// A release named as the distributor numbers it: `14.04` or `22.04` for
-    /// Ubuntu, `12` for Debian. Numbers rather than codenames, because they
-    /// order and a codename does not.
+    /// Ubuntu, `12` for Debian. Numbers, since codenames do not order.
     pub fn new(name: impl Into<Arc<str>>, basis: ReleaseBasis) -> Self {
         Self {
             name: name.into(),
@@ -191,15 +173,11 @@ impl Release {
 }
 
 /// What a [`Release`] was read from.
-///
-/// `#[non_exhaustive]`, like the other model enums.
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum ReleaseBasis {
-    /// A fingerprint rule that maps the whole banner to the release that
-    /// shipped it. An inference from what the release carried: a later
-    /// release that happened to ship the same upstream version would read the
-    /// same.
+    /// A fingerprint rule mapping the whole banner to the release that shipped it. An
+    /// inference: a later release shipping the same version would read the same.
     Banner,
     /// The package revision, which names its release outright, as Debian's
     /// stable updates (`+deb12u3`) and some of Ubuntu's (`0ubuntu0.22.04.1`)
@@ -252,11 +230,9 @@ impl Build {
     /// Records the package revision, and the release it names if it names
     /// one.
     ///
-    /// The release is read off the revision here rather than left to the
-    /// caller, so no build can carry a revision that states its release and
-    /// a release that contradicts it. Where the build already holds a release
-    /// from a weaker source and the revision names another, the release is
-    /// cleared: see [`with_release`](Self::with_release).
+    /// The release is read off the revision here, so a build cannot hold a revision and
+    /// a release that contradict each other. If the build already holds a different
+    /// release, it is cleared; see [`with_release`](Self::with_release).
     pub fn with_revision(mut self, revision: impl Into<Arc<str>>) -> Self {
         let revision = revision.into();
         let stated = release_in_revision(self.distributor, &revision);
@@ -269,11 +245,8 @@ impl Build {
 
     /// Records the release, reconciling it with one already held.
     ///
-    /// Agreement keeps the stronger basis. Disagreement clears the release,
-    /// because both readings are of the same build and one of them is wrong:
-    /// guessing between them would put fix data for the wrong release behind
-    /// every verdict drawn from it, which is a worse report than one that says
-    /// the release is not known.
+    /// Agreement keeps the stronger basis. Disagreement clears the release, since
+    /// guessing could apply the wrong release's fix data to every verdict.
     pub fn with_release(mut self, release: Release) -> Self {
         self.release = match self.release.take() {
             None => Some(release),
@@ -304,12 +277,9 @@ impl Build {
 
     /// Folds another account of the same build into this one.
     ///
-    /// Only an account naming the same distributor contributes, and it fills
-    /// what this one lacks: a banner that stated the revision and a rule that
-    /// named the release describe one build between them. An account naming a
-    /// different distributor describes a different build and contributes
-    /// nothing; which of two such accounts a service keeps is
-    /// [`Service::merge`](super::Service::merge)'s decision, by confidence.
+    /// Only an account naming the same distributor contributes, filling what this one
+    /// lacks. Between different distributors,
+    /// [`Service::merge`](super::Service::merge) decides by confidence.
     pub fn merge(&mut self, other: Build) {
         if other.distributor != self.distributor {
             return;
@@ -331,10 +301,9 @@ impl Build {
 /// A release as a banner rule states it, in the form this module keys
 /// releases by, or [`None`] where the text is not a release of `distributor`.
 ///
-/// Rules state releases the way the distribution announced them, and Debian
-/// announced point releases: `7.8` is Debian 7, and fix data is published per
-/// major release. Ubuntu's are already the key (`14.04`). Any other
-/// distributor's release is taken as written, since no fix data reads it.
+/// Debian announced point releases (`7.8` is Debian 7) while fix data is per major
+/// release. Ubuntu's are already the key (`14.04`). Other distributors' releases are
+/// taken as written.
 pub(crate) fn normalised_release(distributor: Distributor, text: &str) -> Option<String> {
     let text = text.trim();
     match distributor {
@@ -359,9 +328,8 @@ pub(crate) fn normalised_release(distributor: Distributor, text: &str) -> Option
 
 /// The release a package revision names, where it names one.
 ///
-/// Two conventions are read, both of which put the release into the revision
-/// precisely so that one source version can be published to several releases
-/// without two packages sharing a version:
+/// Two conventions put the release into the revision, so one source version can be
+/// published to several releases:
 ///
 /// - Debian's stable and security updates append `+debNuM` (`2+deb12u3`), and
 ///   backports append `~bpoN` (`1~bpo12+1`); the number is the release.
@@ -369,9 +337,7 @@ pub(crate) fn normalised_release(distributor: Distributor, text: &str) -> Option
 ///   after `ubuntu0.` (`0ubuntu0.22.04.1`), and backports and PPAs after a
 ///   tilde (`1~22.04.1`).
 ///
-/// Most Ubuntu revisions (`3ubuntu0.10`, `2ubuntu2.13`) name no release, and
-/// for those this answers [`None`]: the release then has to come from
-/// somewhere else, or stay unknown.
+/// Most Ubuntu revisions (`3ubuntu0.10`, `2ubuntu2.13`) name no release: [`None`].
 fn release_in_revision(distributor: Distributor, revision: &str) -> Option<String> {
     match distributor {
         Distributor::Debian | Distributor::Raspbian => {
@@ -411,9 +377,8 @@ fn ubuntu_release_after(revision: &str, marker: &str) -> Option<String> {
             && rest[2] == b'.'
             && rest[3..5].iter().all(u8::is_ascii_digit)
             && rest.get(5).is_none_or(|next| !next.is_ascii_digit());
-        // Ubuntu has released every April and October since 2004, so a
-        // release is `YY.04` or `YY.10`; anything else in that position is a
-        // version that happens to have the same shape.
+        // Ubuntu releases every April and October, so a release is `YY.04` or
+        // `YY.10`.
         let month = &rest.get(3..5)?;
         (shaped && matches!(*month, b"04" | b"10"))
             .then(|| String::from_utf8_lossy(&rest[..5]).into_owned())
@@ -424,10 +389,8 @@ fn ubuntu_release_after(revision: &str, marker: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A banner's comment spells its distributor the way the daemon's packager
-    /// wrote it, and an Apache `Server` header spells Red Hat's in full. Every
-    /// spelling a real banner uses has to land on one distributor, and a word
-    /// in the same position that names none has to land on nothing.
+    /// Every spelling real banners use lands on one distributor, and other words land
+    /// on nothing.
     #[test]
     fn distributors_are_read_as_banners_spell_them_and_nothing_else_is() {
         assert_eq!(Distributor::from_name("Ubuntu"), Some(Distributor::Ubuntu));
@@ -453,9 +416,7 @@ mod tests {
         }
     }
 
-    /// Debian names the release its stable updates were built for in the
-    /// revision, and that is the one statement about a build that cannot be
-    /// wrong about which release it is.
+    /// Debian's stable updates name their release in the revision.
     #[test]
     fn a_debian_revision_names_its_release() {
         let release = |revision: &str| {
@@ -480,9 +441,8 @@ mod tests {
         assert_eq!(release("7"), None);
     }
 
-    /// Ubuntu's updates to a version several releases share name the release
-    /// after `ubuntu0.`; its ordinary revisions name none, and reading a
-    /// version-shaped number out of one would invent a release.
+    /// Ubuntu's shared-version updates name the release after `ubuntu0.`; ordinary
+    /// revisions name none.
     #[test]
     fn an_ubuntu_revision_names_its_release_only_where_it_states_one() {
         let release = |revision: &str| {
@@ -500,9 +460,7 @@ mod tests {
         assert_eq!(release("0ubuntu0.12.34.1"), None, "not an April or October");
     }
 
-    /// Two sources naming the same release is corroboration and keeps the
-    /// stronger basis; two naming different releases is a contradiction about
-    /// one build, and the release becomes unknown rather than a coin toss.
+    /// Agreement keeps the stronger basis; disagreement leaves the release unknown.
     #[test]
     fn a_release_two_sources_disagree_about_is_unknown() {
         let agreed = Build::new(Distributor::Debian)
@@ -525,9 +483,8 @@ mod tests {
         );
     }
 
-    /// One banner stating the revision and a rule naming the release are two
-    /// halves of one build's description, and only an account of the same
-    /// distributor's build may complete it.
+    /// A revision from a banner and a release from a rule complete one build, for the
+    /// same distributor only.
     #[test]
     fn a_merge_completes_a_build_only_from_the_same_distributors_account() {
         let mut build = Build::new(Distributor::Ubuntu).with_revision("2ubuntu2.13");

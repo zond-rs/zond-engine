@@ -10,23 +10,17 @@
 //!
 //! [`PortSet`] is the port half of a scan's target specification: what a person
 //! wrote, such as `"80, 443, 1000-2000, u:53, s:2905"`, held as disjoint ranges
-//! per protocol. A qualifier in front of a token names the transport for it and
-//! for every token after it until the next one, as nmap reads its own, and the
-//! spelling belongs to [`Protocol::spec_prefix`].
+//! per protocol. A qualifier in front of a token names the transport for it and every
+//! token after it until the next; the spelling belongs to [`Protocol::spec_prefix`].
 //!
-//! It is built once and never mutated. Every construction path merges and
-//! sorts before returning, and there is no method that can undo that, so a
-//! `PortSet` is canonical from the moment it exists. Two consequences follow,
-//! and both are relied on elsewhere:
+//! It is canonical from construction and never mutated, so:
 //!
-//! - Membership is a binary search over sorted disjoint ranges, and it takes
-//!   `&self`. A set can be shared across every worker in a scan with no lock,
-//!   because there is nothing for a lock to protect.
-//! - `Hash` agrees with `Eq`. Two sets holding the same ports hold identical
-//!   range vectors whatever order or spelling produced them, which is what lets
-//!   [`TargetMapBuilder`](crate::model::parse::target::TargetMapBuilder) group
-//!   targets by port specification in constant time per target rather than by
-//!   scanning the groups it has so far.
+//! - Membership is a binary search over sorted disjoint ranges, taking `&self`, so a
+//!   set can be shared across workers without a lock.
+//! - `Hash` agrees with `Eq`: two sets holding the same ports have identical range
+//!   vectors, which lets
+//!   [`TargetMapBuilder`](crate::model::parse::target::TargetMapBuilder) group targets
+//!   by port specification in constant time.
 
 use crate::model::port::Protocol;
 use std::{
@@ -41,18 +35,14 @@ use thiserror::Error;
 /// enough to be worth asking every host about, across Linux, Windows and
 /// networking gear.
 ///
-/// SSH, HTTP, HTTPS, SMB and RDP. Numbers rather than a written specification,
-/// so that everything reaching for this list reaches for the same one: the
-/// unprivileged discovery sweep probes exactly these, and a second spelling
-/// somewhere else is a second list to keep in step.
+/// SSH, HTTP, HTTPS, SMB and RDP. The unprivileged discovery sweep probes exactly
+/// these.
 pub const COMMON_DISCOVERY_PORTS: &[u16] = &[22, 80, 443, 445, 3389];
 
 /// Where a range with its start left off begins: `-1024` means `1-1024`.
 ///
-/// One rather than zero. Port 0 is reserved and nothing listens on it, so
-/// including it in an open-ended range would spend a probe per host to
-/// re-establish that, and `-` is the specification people reach for when the port
-/// count is already enormous. A caller who wants it can still name `0` outright.
+/// One, since port 0 is reserved and nothing listens on it. Name `0` outright to
+/// include it.
 const FIRST_PORT: u16 = 1;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -61,8 +51,8 @@ const FIRST_PORT: u16 = 1;
 
 /// Errors that can occur when parsing a port range string.
 ///
-/// Each one is printed at whoever wrote the specification, so each says what
-/// was wrong with which token and then, in parentheses, what to write instead.
+/// Each says what was wrong with which token and, in parentheses, what to write
+/// instead.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PortSetParseError {
@@ -70,7 +60,7 @@ pub enum PortSetParseError {
     /// so `70000` fails here rather than wrapping to `4464`.
     #[error("{}", invalid_port(input, source))]
     InvalidPort {
-        /// The token as written, so a user can find it in what they typed.
+        /// The token as written.
         input: String,
         /// Why it did not parse.
         #[source]
@@ -92,31 +82,26 @@ pub enum PortSetParseError {
 
     /// A range was written with spaces around its dash, as in `80 - 90`.
     ///
-    /// Refused rather than read, because spaces separate ports: the halves of
-    /// `80 - 90` are an open-ended range each, and the dash between them
-    /// alone is every port there is. Carries the range as written.
+    /// Refused, because spaces separate ports: `80 - 90` would read as two open-ended
+    /// ranges and a bare dash, which is every port. Carries the range as written.
     #[error("'{0}' has spaces in a range (write {joined})", joined = .0.split_whitespace().collect::<String>())]
     SpacedRange(String),
 
     /// A name was written where a port number goes, as in `ssh`.
     ///
-    /// Carries the token as written, qualifier included. Which port a name
-    /// stands for is not this grammar's to say: nmap reads one through its
-    /// services table, this engine has none to agree with it on, and a
-    /// specification that meant different ports on two builds would be a scan
-    /// nobody could repeat. A front end that wants to suggest the number can
-    /// ask the signature corpus, which knows the services it identifies.
+    /// Carries the token as written, qualifier included. Names are not resolved, so a
+    /// specification means the same ports on every build; a front end can suggest the
+    /// number from the signature corpus.
     #[error("'{0}' is a name, not a port number (write one, as 22)")]
     ServiceName(String),
 
     /// A specification that is to name the ports a scan covers named none, as
     /// `""` or `" , "` does.
     ///
-    /// Never returned by [`PortSet::try_from`], for which the empty string is
-    /// the empty set, the rendering of one and what reads back from it. What
-    /// refuses it is every place a specification says what to scan: a target's
-    /// port half, a scan request's ports and a settings file's default. There
-    /// an empty set plans a scan of nothing, which finishes without a word.
+    /// Never returned by [`PortSet::try_from`], for which the empty string is the empty
+    /// set. Returned where a specification says what to scan (a target's port half, a
+    /// scan request's ports, a settings file's default), since an empty set would plan
+    /// a scan of nothing.
     #[error("names no ports (write 22 or 1-1024)")]
     NoPorts,
 }
@@ -125,8 +110,8 @@ pub enum PortSetParseError {
 fn invalid_port(input: &str, source: &ParseIntError) -> String {
     match source.kind() {
         IntErrorKind::PosOverflow => format!("'{input}' is not a port (the highest is 65535)"),
-        // Only a qualifier with nothing behind it gets this far empty: an end
-        // left off a range is an open end.
+        // Only a bare qualifier gets here empty; a missing range end is an open
+        // end.
         IntErrorKind::Empty => format!("'{input}' names no port (write {input}53)"),
         _ => format!("'{input}' is not a port number (write 22, 1-1024 or u:53)"),
     }
@@ -138,13 +123,9 @@ fn invalid_port(input: &str, source: &ParseIntError) -> String {
 
 /// The ports a scan asks about on each transport, as sorted disjoint ranges.
 ///
-/// Canonical from construction and immutable afterwards; the module
-/// documentation has what that buys and who relies on it.
+/// Canonical from construction and immutable; see the module documentation.
 ///
-/// Ranges rather than a set of numbers because the specifications people write
-/// are overwhelmingly contiguous, such as `1-1024` or `1-65535`, and holding
-/// sixty-five thousand `u16`s to represent one of them costs memory per target
-/// group, of which a large import has many.
+/// Ranges, since specifications are overwhelmingly contiguous (`1-1024`, `1-65535`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PortSet {
     tcp: Vec<RangeInclusive<u16>>,
@@ -165,14 +146,7 @@ impl PortSet {
     /// The ports worth asking every host about when the caller named none:
     /// [`COMMON_DISCOVERY_PORTS`].
     ///
-    /// A deliberate choice rather than a neutral value, which is why it is not
-    /// [`Default`]. A caller that scans this set is scanning what this crate
-    /// picked, and should have said so.
-    ///
-    /// Built from the numbers rather than by parsing a written specification.
-    /// The round trip was a fallible call on a constant this module owns, so a
-    /// typo in the constant was a panic at a consumer's first call rather than
-    /// something the compiler could catch.
+    /// An opinion, so not [`Default`]: a caller scanning this set should say so.
     pub fn common_discovery() -> Self {
         COMMON_DISCOVERY_PORTS
             .iter()
@@ -182,14 +156,11 @@ impl PortSet {
 
     /// The `count` TCP ports this engine would ask about first.
     ///
-    /// The default a scan uses when the caller named no ports, and the answer to
-    /// `--top-ports`. See [`catalog`](crate::model::port::catalog) for where the
-    /// ranking comes from and how precisely to read it; the short version is
-    /// that the first hundred are ranked against each other and the rest are
-    /// grouped into tiers of comparable likelihood.
+    /// The default when the caller named no ports. The first hundred are ranked against
+    /// each other and the rest grouped into tiers; see
+    /// [`catalog`](crate::model::port::catalog).
     ///
-    /// Clamped to what the catalogue holds, so a caller passing a number a
-    /// person typed gets every port there is rather than a panic.
+    /// Clamped to what the catalogue holds.
     ///
     /// # Examples
     ///
@@ -198,8 +169,7 @@ impl PortSet {
     ///
     /// let top = PortSet::top_tcp(100);
     /// assert!(top.has_tcp(443));
-    /// // Outside the well-known range, and running a service on a great many
-    /// // home servers. This is what `1-1024` was missing.
+    /// // Outside the well-known range, and common on home servers.
     /// assert!(PortSet::top_tcp(1000).has_tcp(5432));
     /// ```
     pub fn top_tcp(count: usize) -> Self {
@@ -211,12 +181,9 @@ impl PortSet {
 
     /// The `count` UDP ports this engine would ask about first.
     ///
-    /// The counterpart of [`top_tcp`](Self::top_tcp), drawn from a much shorter
-    /// list: a UDP port costs far more to classify and far
-    /// more of them come back
-    /// [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply) whatever is
-    /// done, so the catalogue stops where the extra probes stop buying
-    /// certainty.
+    /// Drawn from a much shorter list than [`top_tcp`](Self::top_tcp), since UDP ports
+    /// cost more to classify and often stay
+    /// [`OpenOrNoReply`](crate::model::port::PortState::OpenOrNoReply).
     pub fn top_udp(count: usize) -> Self {
         super::catalog::top_udp(count)
             .iter()
@@ -226,19 +193,15 @@ impl PortSet {
 
     /// The `count` SCTP ports this engine would ask about first.
     ///
-    /// The one list of the three that is not a default. A scan reaches SCTP
-    /// only where a port specification named it, so this is what a front end
-    /// offering the scan asks for rather than what fills in a blank. It is also
-    /// the shortest by an order of magnitude, and
-    /// [`catalog::SCTP_BY_PREVALENCE`](super::catalog::SCTP_BY_PREVALENCE) has
-    /// the argument for why a closed set needs no tail.
+    /// Not a default: a scan reaches SCTP only where a specification names it. See
+    /// [`catalog::SCTP_BY_PREVALENCE`](super::catalog::SCTP_BY_PREVALENCE).
     ///
     /// # Examples
     ///
     /// ```
     /// use zond_engine::model::port::set::PortSet;
     ///
-    /// // The mobile core comes first, so a short list is still a useful one.
+    /// // The mobile core comes first.
     /// assert!(PortSet::top_sctp(3).has_sctp(3868));
     /// ```
     pub fn top_sctp(count: usize) -> Self {
@@ -248,9 +211,7 @@ impl PortSet {
             .collect()
     }
 
-    /// Returns the total number of unique port/protocol combinations.
-    ///
-    /// Note: This counts every individual port within every range.
+    /// The total number of distinct port and protocol pairs.
     pub fn len(&self) -> usize {
         Protocol::ALL
             .iter()
@@ -269,8 +230,7 @@ impl PortSet {
 
     /// Returns an iterator over all individual ports in the set.
     ///
-    /// Walks the protocols in [`Protocol::ALL`] order, so a set renders and
-    /// enumerates the same way whatever order it was written in.
+    /// In [`Protocol::ALL`] order, whatever order the set was written in.
     pub fn iter(&self) -> impl Iterator<Item = (u16, Protocol)> + '_ {
         Protocol::ALL.iter().copied().flat_map(move |protocol| {
             self.ranges(protocol)
@@ -286,9 +246,8 @@ impl PortSet {
 
     /// The ports on one transport, as the merged ranges they are stored as.
     ///
-    /// Ascending and non-overlapping from construction. Exposed as ranges rather
-    /// than as ports because that is what they are: a full sweep is one entry
-    /// here and sixty-five thousand through [`iter`](Self::iter).
+    /// Ascending and non-overlapping. A full sweep is one entry here and 65,535 through
+    /// [`iter`](Self::iter).
     pub fn ranges(&self, protocol: Protocol) -> &[RangeInclusive<u16>] {
         match protocol {
             Protocol::Tcp => &self.tcp,
@@ -299,10 +258,8 @@ impl PortSet {
 
     /// The lane a protocol's ranges are built into.
     ///
-    /// The one exhaustive match over [`Protocol`] on the write side, so a
-    /// transport added to the enum stops this compiling until somebody says
-    /// where its ports go. A catch-all here, or a local vector nobody returns,
-    /// would drop them and produce a set quietly missing what it was given.
+    /// The one exhaustive match over [`Protocol`] on the write side, so a new transport
+    /// fails to compile until its ports have a place.
     fn lane_mut(&mut self, protocol: Protocol) -> &mut Vec<RangeInclusive<u16>> {
         match protocol {
             Protocol::Tcp => &mut self.tcp,
@@ -321,8 +278,7 @@ impl PortSet {
 
     /// The ports in either set.
     ///
-    /// Merged as ranges rather than expanded, so uniting two full sweeps costs
-    /// two entries and not a hundred and thirty thousand.
+    /// Merged as ranges, without expanding them.
     pub fn union(&self, other: &PortSet) -> PortSet {
         let mut merged = PortSet::new();
         for &protocol in Protocol::ALL {
@@ -336,9 +292,8 @@ impl PortSet {
 
     /// The ports in this set and not in `other`.
     ///
-    /// Cut as ranges rather than expanded, for the reason [`union`](Self::union)
-    /// merges them: taking one port out of a full sweep leaves two entries, not
-    /// sixty-five thousand. The result is canonical, as every set is.
+    /// Cut as ranges, like [`union`](Self::union): one port out of a full sweep leaves
+    /// two entries.
     ///
     /// ```
     /// use zond_engine::model::port::set::PortSet;
@@ -353,9 +308,8 @@ impl PortSet {
             let cuts = other.ranges(protocol);
             let lane = kept.lane_mut(protocol);
             for range in self.ranges(protocol) {
-                // What is left of `range` from here up; `None` once a cut
-                // reached its end. Both lists are sorted and disjoint, so each
-                // cut past the range's end is one no later range reaches first.
+                // What is left of `range` from here up; `None` once a cut reached
+                // its end. Both lists are sorted and disjoint.
                 let mut rest = Some(*range.start());
                 for cut in cuts {
                     let Some(start) = rest else { break };
@@ -378,9 +332,7 @@ impl PortSet {
         kept
     }
 
-    /// Whether the set holds `port` on `protocol`. A binary search over the
-    /// merged ranges, so the cost follows how many ranges were written rather
-    /// than how many ports they cover.
+    /// Whether the set holds `port` on `protocol`, by binary search over the ranges.
     pub fn contains(&self, port: u16, protocol: Protocol) -> bool {
         self.ranges(protocol)
             .binary_search_by(|range| {
@@ -412,8 +364,7 @@ impl PortSet {
 
     // ─── Internal Utility ────────────────────────────────────────────────────
 
-    /// Sorts and merges overlapping/adjacent ranges.
-    /// Called automatically during construction.
+    /// Sorts and merges overlapping and adjacent ranges; called during construction.
     fn merge_ranges(ranges: &mut Vec<RangeInclusive<u16>>) {
         if ranges.is_empty() {
             return;
@@ -425,7 +376,7 @@ impl PortSet {
         let mut current = it.next().unwrap();
 
         for next in it {
-            // Check for overlap or adjacency
+            // Overlapping or adjacent
             if *next.start() <= (*current.end()).saturating_add(1) {
                 if *next.end() > *current.end() {
                     current = *current.start()..=*next.end();
@@ -445,13 +396,9 @@ impl PortSet {
 // ══════════════════════════════════════════════════════════════════════════════
 
 impl Default for PortSet {
-    /// The empty set, which is what every other `Default` in this crate means
-    /// and what a struct deriving `Default` around one has to get.
-    ///
-    /// The opinionated set is [`common_discovery`](Self::common_discovery). It
-    /// was `Default` once, which meant that
-    /// [`TargetSet`](crate::model::target::TargetSet) and anything else
-    /// deriving `Default` acquired a scan specification nobody wrote.
+    /// The empty set. The opinionated one is
+    /// [`common_discovery`](Self::common_discovery), so a struct deriving `Default`
+    /// around a `PortSet` gets no ports nobody wrote.
     fn default() -> Self {
         Self::new()
     }
@@ -459,15 +406,11 @@ impl Default for PortSet {
 
 /// The set as a specification [`TryFrom<&str>`](PortSet::try_from) reads back.
 ///
-/// The canonical form: the protocols in [`Protocol::ALL`] order, each one's
-/// ranges ascending behind its own prefix, a single port written as itself and a
-/// run written `start-end`. TCP comes first and so needs no qualifier, and
-/// every other range carries its own although the one before it would do, so
-/// the rendering reads the same to a parser that takes a qualifier for one
-/// token as to one that takes it until the next. Because the ranges are merged from construction, two
-/// sets holding the same ports render identically, which is what lets a written
-/// scope be compared with another and what lets a report record a port set as
-/// one field.
+/// The canonical form: protocols in [`Protocol::ALL`] order, each range ascending
+/// behind its own prefix, a single port as itself and a run as `start-end`. TCP comes
+/// first with no qualifier; every other range carries its own, so the rendering reads
+/// the same whether a parser applies a qualifier to one token or until the next. Two
+/// sets holding the same ports render identically.
 ///
 /// An empty set renders as the empty string, and reads back as an empty set.
 ///
@@ -502,10 +445,8 @@ impl fmt::Display for PortSet {
 /// Splits a written token into the protocol a qualifier in front of it names,
 /// if it carries one, and the port or range left behind.
 ///
-/// Case-insensitive, as every other parser here reads the words a person types:
-/// `U:53` is `u:53`. The qualifiers are [`Protocol::qualifier`]'s, so `t:`
-/// names TCP outright, which a specification needs once it has switched to
-/// another transport and wants to switch back.
+/// Case-insensitive: `U:53` is `u:53`. The qualifiers are [`Protocol::qualifier`]'s,
+/// including `t:` for switching back to TCP.
 fn split_qualifier(word: &str) -> (Option<Protocol>, &str) {
     for &protocol in Protocol::ALL {
         let qualifier = protocol.qualifier();
@@ -521,13 +462,9 @@ fn split_qualifier(word: &str) -> (Option<Protocol>, &str) {
 /// Refuses a range written with spaces around its dash, as in `80 - 90`,
 /// `80- 90` or `80 -90`.
 ///
-/// Spaces separate ports, so each of those arrives as words, one of them with
-/// an open end: a leading dash, a trailing one, or a dash on its own, which is
-/// all three. An open end facing another word across nothing but spaces is
-/// the one reading nobody means, since `80 - 90` would then be every port
-/// there is. An open end facing a comma or the edge of the specification is
-/// the ordinary open-ended range, so `80, -1024` and `-1024 8080` are what
-/// they look like.
+/// Spaces separate ports, so each arrives as words with an open end facing another word
+/// across spaces, which nobody means. An open end facing a comma or the edge of the
+/// specification is an ordinary open-ended range, so `80, -1024` and `-1024 8080` work.
 fn refuse_spaced_range(words: &[&str]) -> Result<(), PortSetParseError> {
     for (index, word) in words.iter().enumerate() {
         let opens_back = word.starts_with('-') && index > 0;
@@ -546,9 +483,8 @@ fn refuse_spaced_range(words: &[&str]) -> Result<(), PortSetParseError> {
 /// Parses one port where a number goes, telling a name written there apart
 /// from any other token that is not a number.
 ///
-/// `whole` is the token the number came from, which is what the error carries,
-/// so a UDP port reports `u:http` rather than `http`, which is not what
-/// anybody typed.
+/// `whole` is the token the number came from, which the error carries, so a UDP port
+/// reports `u:http`.
 fn port_number(text: &str, whole: &str) -> Result<u16, PortSetParseError> {
     text.parse::<u16>().map_err(|source| {
         let named = text.starts_with(|c: char| c.is_ascii_alphabetic())
@@ -574,19 +510,13 @@ impl TryFrom<&str> for PortSet {
     /// ### Format Support
     /// * **Individual**: `80`, `443`
     /// * **Ranges**: `1000-2000`
-    /// * **Open-ended ranges**: `-1024` is everything up to 1024, `1024-` is
-    ///   everything from it, and a bare `-` is every port there is. The
-    ///   convention every scanner's users already have in their fingers, and
-    ///   more use than a flag for the same thing would be, since it applies to
-    ///   the UDP half (`u:-`) and to one side of a mixed specification just as
-    ///   readily.
-    /// * **Protocols**: TCP until a qualifier says otherwise. `u:` switches to
-    ///   UDP, `s:` to SCTP and `t:` back to TCP, and a qualifier holds for
-    ///   every port after it until the next one, as nmap reads them:
+    /// * **Open-ended ranges**: `-1024` is everything up to 1024, `1024-` everything
+    ///   from it, and a bare `-` every port. Works for the UDP half (`u:-`) too.
+    /// * **Protocols**: TCP until a qualifier says otherwise. `u:` switches to UDP,
+    ///   `s:` to SCTP and `t:` back to TCP, and a qualifier holds until the next one:
     ///   `u:53,161` is two UDP ports. Case-insensitive.
-    /// * **Separators**: commas and spaces, in any number. A range is written
-    ///   without spaces, and `80 - 90` is refused rather than read as the three
-    ///   open-ended ranges it would otherwise spell.
+    /// * **Separators**: commas and spaces, in any number. A range has no spaces;
+    ///   `80 - 90` is refused.
     /// * **Mixed**: `80, 443, 161-162, u:53, s:2905`
     ///
     /// # Examples
@@ -603,7 +533,7 @@ impl TryFrom<&str> for PortSet {
     /// // Back to TCP after another transport.
     /// assert!(PortSet::try_from("u:53, t:80").unwrap().has_tcp(80));
     ///
-    /// // Every port there is, which is what `-p-` means on a command line.
+    /// // Every port.
     /// let everything = PortSet::try_from("-").unwrap();
     /// assert_eq!(everything.len(), 65_535);
     /// assert!(everything.has_tcp(1) && everything.has_tcp(65_535));
@@ -627,9 +557,8 @@ impl TryFrom<&str> for PortSet {
                         let port = port_number(single, word)?;
                         port..=port
                     }
-                    // An end left off means "as far as there is", at whichever
-                    // end it was left off. `-` on its own is both, and so is
-                    // every port.
+                    // A missing end means "as far as there is"; `-` alone is every
+                    // port.
                     [start, end] => {
                         let start = if start.is_empty() {
                             FIRST_PORT
@@ -715,11 +644,8 @@ mod tests {
 
     /// Taking ports out of a set leaves exactly the rest, per transport.
     ///
-    /// A port kept that should have gone is a probe sent to a port the caller
-    /// excluded, and one lost beside it is a port nobody asked to skip. The
-    /// cases are the edges a range cut can get wrong: a cut at either end of a
-    /// range, one inside it, one spanning two ranges, one at 65535, and a cut
-    /// on another transport leaving this one alone.
+    /// Cuts at either end of a range, inside it, spanning two ranges, at 65535, and on
+    /// another transport.
     #[test]
     fn a_difference_keeps_every_port_outside_the_cut_and_none_inside_it() {
         let set = |spec: &str| PortSet::try_from(spec).expect("a specification");
@@ -763,16 +689,8 @@ mod tests {
         assert_eq!(PortSet::try_from(set.to_string().as_str()).unwrap(), set);
     }
 
-    /// The UDP prefix is read the way every other word a person types is.
-    ///
-    /// `TcpScanTechnique::from_str` ignores case, `Keyword::from_token` ignores
-    /// case, `MacAddr::from_str` takes either, and hex is hex. This was the one
-    /// parser in the module that did not, and it refused `U:53` with "Failed to
-    /// parse port from 'U:53'", which reads as a complaint about the number.
-    ///
-    /// The error also carries the token as its field promises: the whole of what
-    /// was written, prefix included, rather than what is left after the prefix
-    /// comes off.
+    /// The UDP prefix is case-insensitive, and the error carries the whole token,
+    /// prefix included.
     #[test]
     fn the_udp_prefix_is_read_the_way_every_other_token_is() {
         let lower = PortSet::try_from("u:53").expect("the spelling that always worked");
@@ -780,8 +698,7 @@ mod tests {
         assert_eq!(lower, upper);
         assert!(upper.has_udp(53) && !upper.has_tcp(53));
 
-        // Mixed into a specification, where it must not reach back to a TCP
-        // port written before it.
+        // It does not reach back to a TCP port written before it.
         let mixed = PortSet::try_from("80, U:53, u:161-162").expect("parses");
         assert!(mixed.has_tcp(80));
         assert!(mixed.has_udp(53) && mixed.has_udp(161) && mixed.has_udp(162));
@@ -793,8 +710,7 @@ mod tests {
         assert!(error.contains("U:http"), "the token as written: {error}");
     }
 
-    /// The forms a person actually writes, mixed in one specification the way
-    /// they arrive on a command line.
+    /// The common forms, mixed in one specification.
     #[test]
     fn a_specification_may_mix_ports_ranges_and_protocols() {
         let port_set_single = PortSet::try_from("21");
@@ -816,8 +732,7 @@ mod tests {
         assert!(port_set_multiple.has_tcp(8080));
     }
 
-    /// `u:` is this crate's own spelling for the UDP half, and it has to apply
-    /// to a range as well as to a single port.
+    /// `u:` applies to a range as well as a single port.
     #[test]
     fn the_udp_prefix_applies_to_single_ports_and_to_ranges() {
         let port_set_udp = PortSet::try_from("u:22 u:53-100, u:1024");
@@ -833,9 +748,7 @@ mod tests {
         assert!(port_set_udp.has_udp(1024));
     }
 
-    /// The spelling every scanner's users already know, in all three of its
-    /// forms. `-p-` is the one people type; the open-ended halves fall out of
-    /// the same rule and are worth having for their own sake.
+    /// Open-ended ranges in all three forms.
     #[test]
     fn a_range_may_leave_off_either_end_or_both() {
         let everything = PortSet::try_from("-").unwrap();
@@ -852,10 +765,7 @@ mod tests {
         assert!(!onward.has_tcp(1023));
     }
 
-    /// Port 0 is reserved and nothing listens on it, so an open-ended range
-    /// starts at 1. A probe per host to re-establish that is a probe wasted, and
-    /// these are the specifications with the most hosts behind them. Naming it
-    /// outright still works.
+    /// An open-ended range starts at 1; naming 0 outright still works.
     #[test]
     fn an_open_ended_range_starts_at_one_and_zero_must_be_asked_for() {
         assert!(!PortSet::try_from("-").unwrap().has_tcp(0));
@@ -863,8 +773,7 @@ mod tests {
         assert!(PortSet::try_from("0").unwrap().has_tcp(0));
     }
 
-    /// The open ends compose with everything else the grammar has: the
-    /// qualifiers, and the other members of a mixed specification.
+    /// Open ends compose with qualifiers and mixed specifications.
     #[test]
     fn an_open_ended_range_composes_with_the_rest_of_the_grammar() {
         let mixed = PortSet::try_from("22, u:-, t:9000-").unwrap();
@@ -875,8 +784,7 @@ mod tests {
         assert!(mixed.has_udp(1) && mixed.has_udp(65_535));
     }
 
-    /// A dash is an end left off, not a wildcard: two of them name no range and
-    /// are refused rather than read as one.
+    /// Two dashes are refused.
     #[test]
     fn more_than_one_dash_is_still_malformed() {
         assert!(matches!(
@@ -889,10 +797,7 @@ mod tests {
         ));
     }
 
-    /// Whitespace names no ports, which is a valid thing for a set to hold:
-    /// the empty set is what `Default` means and what an empty set renders
-    /// as, so it has to read back. Where a specification says what to scan,
-    /// naming nothing is refused instead.
+    /// Whitespace parses as the empty set, but `parse_scan` refuses it.
     #[test]
     fn a_specification_naming_nothing_is_an_empty_set_not_an_error() {
         let empty = PortSet::try_from("   ");
@@ -920,9 +825,7 @@ mod tests {
         assert!(limits.has_udp(32768));
     }
 
-    /// Target lists are hand-written and pasted together, so stray and repeated
-    /// separators are ordinary rather than exceptional. Refusing them would
-    /// reject a file over punctuation.
+    /// Stray and repeated separators are accepted.
     #[test]
     fn stray_separators_are_tolerated_rather_than_refused() {
         let messy = PortSet::try_from(", 80, , 443 ,").unwrap();
@@ -930,9 +833,8 @@ mod tests {
         assert!(messy.has_tcp(443));
     }
 
-    /// Each mistake is reported as the kind of mistake it is, because the
-    /// error is printed at whoever typed it. A port too large for 16 bits must
-    /// not silently wrap to a port they did not ask for.
+    /// Each mistake gets its own error, and a port too large for 16 bits does not
+    /// wrap.
     #[test]
     fn each_malformed_specification_is_refused_with_its_own_reason() {
         let port_set_invalid_port = PortSet::try_from("80 70000 22");
@@ -970,10 +872,8 @@ mod tests {
         ));
     }
 
-    /// A qualifier holds for every port after it until the next one, which is
-    /// how nmap reads `-p U:53,161,T:21-25,80` and how anybody who learned the
-    /// grammar there writes it. Read per token, `U:53,161` scans TCP 161, a
-    /// port nobody asked for, and reports it as if it were the answer.
+    /// A qualifier holds until the next one: `U:53,161,T:21-25,80` is UDP 53 and 161
+    /// and TCP 21-25 and 80.
     #[test]
     fn a_qualifier_holds_until_the_next_one_as_nmap_reads_it() {
         let set = PortSet::try_from("U:53,161").expect("an nmap specification");
@@ -991,13 +891,8 @@ mod tests {
         assert!(tcp.has_tcp(22) && tcp.len() == 1);
     }
 
-    /// A range written with spaces around its dash is refused, not read as the
-    /// open-ended ranges its halves spell apart. `80 - 90` is three tokens,
-    /// the middle one every port there is, and scanning 65,535 ports for a
-    /// request for eleven is the worst reading available.
-    ///
-    /// Spaces still separate ports, and an open end facing a comma or the
-    /// edge of the specification is still an open end.
+    /// A range with spaces around its dash is refused, while an open end facing a
+    /// comma or the edge is still an open end.
     #[test]
     fn a_range_written_with_spaces_is_refused_rather_than_widened() {
         for (written, fix) in [
@@ -1020,9 +915,7 @@ mod tests {
         assert!(PortSet::try_from("-1024 8080").unwrap().has_tcp(8080));
     }
 
-    /// Each refusal says what to write instead, since it is printed at whoever
-    /// typed the specification and "invalid digit found in string" tells them
-    /// only that something somewhere was not a number.
+    /// Each refusal says what to write instead.
     #[test]
     fn each_refusal_says_what_to_write_instead() {
         let hint = |written: &str| PortSet::try_from(written).expect_err("refused").to_string();
@@ -1052,8 +945,7 @@ mod tests {
         );
     }
 
-    /// The owned-string conversion has to agree with the borrowed one, since
-    /// callers reach this type from both an argument and a parsed config.
+    /// The owned-string conversion agrees with the borrowed one.
     #[test]
     fn an_owned_string_parses_the_same_as_a_borrowed_one() {
         let port_set = PortSet::try_from(String::from("21 80-100 u:5353"));
@@ -1069,19 +961,8 @@ mod tests {
         assert!(port_set.has_udp(5353));
     }
 
-    /// Two claims, and the second is why the first is written here.
-    ///
-    /// Two claims, and the second is why the first is written here.
-    ///
-    /// `common_discovery` is the set every caller that wants this crate's
-    /// opinion reaches for, including the unprivileged discovery sweep, so what
-    /// it holds has to be exactly what [`COMMON_DISCOVERY_PORTS`] names. A
-    /// second list somewhere else was how the sweep and this set could come to
-    /// disagree with nothing reporting it.
-    ///
-    /// And `Default` is empty. It named those same five ports once, which meant
-    /// every struct deriving `Default` around a `PortSet`, `TargetSet` among
-    /// them, silently carried a scan specification nobody wrote.
+    /// `common_discovery` holds exactly [`COMMON_DISCOVERY_PORTS`], and `Default` is
+    /// empty.
     #[test]
     fn the_discovery_set_is_what_the_constant_names_and_default_stays_empty() {
         let set = PortSet::common_discovery();
@@ -1098,18 +979,15 @@ mod tests {
         assert_eq!(PortSet::default(), PortSet::new());
     }
 
-    /// Canonical from construction: overlapping, adjacent and subsumed ranges
-    /// all collapse. That is what makes membership a binary search and what
-    /// makes `Hash` agree with `Eq`, so two spellings of one set group together
-    /// in `TargetMapBuilder`.
+    /// Overlapping, adjacent and subsumed ranges all collapse at construction.
     #[test]
     fn overlapping_and_adjacent_ranges_collapse_on_construction() {
-        // Overlap: 1-10 and 5-15 should be 1-15
+        // Overlap: 1-10 and 5-15 become 1-15
         let set = PortSet::try_from("1-10, 5-15").unwrap();
         assert_eq!(set.len(), 15);
         assert_eq!(set.tcp.len(), 1);
 
-        // Adjacency: 20 and 21 should be 20-21
+        // Adjacency: 20 and 21 become 20-21
         let set = PortSet::try_from("20, 21").unwrap();
         assert_eq!(set.len(), 2);
         assert_eq!(set.tcp.len(), 1);
@@ -1132,7 +1010,7 @@ mod property_tests {
     use proptest::prelude::*;
 
     proptest::proptest! {
-        /// Verify that any single port inserted is correctly contained in the set.
+        /// Any single port parsed is contained in the set.
         #[test]
         fn single_port_roundtrip(p in 0..=65535u16) {
             let s = format!("{}", p);
@@ -1141,7 +1019,7 @@ mod property_tests {
             prop_assert_eq!(set.len(), 1);
         }
 
-        /// Verify that any port range [a, b] contains all values within it.
+        /// Any port range `[a, b]` contains all values within it.
         #[test]
         fn port_range_invariant(a in 0..=65535u16, b in 0..=65535u16) {
             let (start, end) = if a < b { (a, b) } else { (b, a) };
@@ -1153,7 +1031,7 @@ mod property_tests {
             prop_assert_eq!(set.len(), (end - start + 1) as usize);
         }
 
-        /// Verify that UDP prefix 'u:' correctly assigns ports to the UDP set.
+        /// The `u:` prefix assigns ports to UDP.
         #[test]
         fn udp_prefix_honored(p in 0..=65535u16) {
             let s = format!("u:{}", p);
@@ -1162,7 +1040,7 @@ mod property_tests {
             prop_assert!(!set.has_tcp(p));
         }
 
-        /// Verify that comma-separated lists correctly aggregate multiple ports.
+        /// Comma-separated lists aggregate their ports.
         #[test]
         fn multiple_ports_aggregation(p1 in 0..=1000u16, p2 in 2000..=3000u16) {
             let s = format!("{}, {}", p1, p2);
@@ -1172,7 +1050,7 @@ mod property_tests {
             prop_assert_eq!(set.len(), 2);
         }
 
-        /// Invariant: Normalization produces the same port count as a HashSet.
+        /// Normalization produces the same port count as a `HashSet`.
         #[test]
         fn normalization_invariant(ports in prop::collection::vec(0..=500u16, 1..=50)) {
             let s = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
