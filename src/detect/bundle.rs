@@ -6,52 +6,33 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! # Detections from somebody else, safely
+//! # Signed detection bundles
 //!
-//! The [compute](super::compute) sandbox hands a module `Speak`, `Resolve` and
-//! `Now` and nothing else, metered by byte and by connection, and a
-//! [flow](super::flow) carries no code at all. A detection's power is exactly what
-//! it was handed, which is a thing nmap cannot retrofit: an NSE script gets
-//! unrestricted Lua with sockets, `io` and `os`, so nobody can safely run a
-//! community script they have not read line by line, and in practice nobody runs
-//! community scripts at all.
+//! The [compute](super::compute) sandbox gives a module only `Speak`, `Resolve`
+//! and `Now`, metered by byte and connection, and a [flow](super::flow) carries
+//! no code. That makes it safe to run a stranger's detections: a [`Bundle`] is a
+//! signed set of them, loaded by naming the key the caller trusts.
 //!
-//! Nobody benefits from a sandbox they cannot put a stranger's detection into.
-//! This is the other half: a set of detections, published as one signed
-//! [`Bundle`], that a caller loads by naming the key they trust.
+//! ## The manifest is what is signed
 //!
-//! ## What is signed, and why it is the manifest
+//! One document lists every detection by name, tier and the SHA-256 of its
+//! source. The signature covers it, and each source is held to its recorded
+//! hash. Signing sources separately would leave the set unsigned, so an attacker
+//! serving files could drop a detection or replay an older one.
 //!
-//! One document, listing every detection in the bundle by name, tier and the
-//! SHA-256 of its source. The signature covers that document; each source is then
-//! held to the hash the document records.
+//! ## Loading is the guarantee
 //!
-//! Signing each source separately would leave the set itself unsigned, and the
-//! set is where the interesting attack is. A publisher who signs ten detections
-//! individually has signed nothing about which ten, so an attacker who can serve
-//! files may drop the one that would have found their foothold, or replay an
-//! older, weaker version of it, and every signature still checks out. Signing the
-//! manifest binds the membership, the versions and the bytes together.
-//!
-//! ## The load is the guarantee, not a setting
-//!
-//! There is no "require signatures" flag to leave unset. A source a caller wrote
-//! reaches the corpus through
-//! [`DetectionsBuilder::flow`](super::DetectionsBuilder::flow) and its two
-//! siblings, which is their own deliberate act on bytes they hold. A bundle from
-//! anybody else reaches it through
+//! A caller's own source enters through
+//! [`DetectionsBuilder::flow`](super::DetectionsBuilder::flow) and its siblings.
+//! A stranger's enters only through
 //! [`DetectionsBuilder::bundle`](super::DetectionsBuilder::bundle), which takes a
-//! [`Bundle`], and the only way to obtain one is
-//! [`Bundle::verified`], which takes the key. A caller who never names a key
-//! never loads a stranger's detection, and no configuration can undo that.
+//! [`Bundle`], obtainable only from [`Bundle::verified`] with a key. No setting
+//! changes that.
 //!
-//! ## What this does not do
+//! ## Out of scope
 //!
-//! Fetch anything. There is no client here, no trust store, no update schedule
-//! and no revocation, and each of those is its own argument with its own
-//! failure modes. What a bundle needs is bytes and a key, and where a caller got
-//! them is theirs to decide, which is the same position
-//! [`signature`](crate::signature) takes about keys and for the same reason.
+//! Fetching, trust stores, updates and revocation. A bundle needs bytes and a
+//! key, and the caller supplies both, as with [`signature`](crate::signature).
 //!
 //! ```no_run
 //! use std::collections::BTreeMap;
@@ -88,17 +69,14 @@ use super::corpus::DetectionError;
 
 /// How many detections one bundle may carry.
 ///
-/// A bound on what a manifest can ask this process to compile, since the
-/// manifest arrives before it is trusted and compiling is the expensive part. Set
-/// far above any corpus anybody would hand-author and far below anything that
-/// costs a machine its memory.
+/// Bounds what an untrusted manifest can ask this process to compile: far above
+/// any hand-authored corpus, far below a memory problem.
 pub const MAX_DETECTIONS: usize = 4_096;
 
 /// A verified set of detections, ready to add to a corpus.
 ///
-/// The only way to build one is [`verified`](Self::verified), so holding a
-/// `Bundle` is itself the evidence that a signature was checked against a key the
-/// caller named. Nothing here re-checks it, and nothing needs to.
+/// Only [`verified`](Self::verified) builds one, so holding a `Bundle` means a
+/// signature was checked against a key the caller named.
 #[derive(Debug, Clone)]
 pub struct Bundle {
     name: String,
@@ -134,10 +112,8 @@ impl Entry {
 
     /// The SHA-256 of that source, hex-encoded.
     ///
-    /// The value the manifest recorded, which the source was checked against and
-    /// the signature covered. It is what the corpus stamps on every finding this
-    /// detection produces, so a finding names bytes somebody signed rather than
-    /// bytes that happened to be on disk.
+    /// The value the manifest recorded and the signature covered, stamped on
+    /// every finding this detection produces.
     pub fn sha256(&self) -> &str {
         &self.sha256
     }
@@ -145,10 +121,8 @@ impl Entry {
 
 /// Which tier runs a detection.
 ///
-/// The manifest names it rather than the loader guessing from the source,
-/// because guessing is a thing an attacker gets to influence: a compute module
-/// that reads as a flow would be handed a flow's power and run as one, and the
-/// difference between the two tiers is the whole of what the sandbox is about.
+/// Named in the manifest, so an attacker cannot influence it through the
+/// source's shape.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -164,18 +138,15 @@ pub enum Tier {
 impl Tier {
     /// Every tier this build knows.
     ///
-    /// Here for the reason [`Class::ALL`](crate::detect::manifest::Class::ALL)
-    /// is: the enum is `#[non_exhaustive]`, and a front end describing the
-    /// corpus over its own protocol needs to know when it has missed one.
+    /// As [`Class::ALL`](crate::detect::manifest::Class::ALL): the enum is
+    /// non-exhaustive, and a front end needs the full list.
     pub const ALL: &'static [Self] = &[Self::Flow, Self::Compute, Self::Host];
 }
 
 /// Why a bundle could not be verified.
 ///
-/// Every variant is a refusal to load, never a warning. A bundle that fails any
-/// of these is one nothing should compile, and a caller who wanted to load it
-/// anyway has the sources and can add them one at a time through the builder,
-/// which is a different and visible act.
+/// Every variant is a refusal to load. A caller can still add the sources
+/// individually through the builder.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum BundleError {
@@ -196,9 +167,8 @@ pub enum BundleError {
     },
     /// The caller supplied a source the manifest does not name.
     ///
-    /// Refused rather than ignored. An unnamed source is one the signature says
-    /// nothing about, and a bundle that quietly dropped it would leave a caller
-    /// believing they had loaded a file that never ran.
+    /// Refused, since dropping it silently would leave the caller believing it
+    /// ran.
     Unnamed {
         /// The name it arrived under.
         name: String,
@@ -264,29 +234,23 @@ impl Bundle {
     /// Checks `signature` over `manifest` under `trusted_key`, then holds every
     /// source in `sources` to the hash the manifest recorded for it.
     ///
-    /// `sources` is keyed by the names the manifest uses. Where they come from is
-    /// the caller's business: a directory, an archive, a database row.
+    /// `sources` is keyed by the names the manifest uses.
     ///
-    /// The order is the whole of the discipline. The signature is checked before
-    /// the manifest is parsed, so the parser never runs on bytes nobody vouched
-    /// for; the hashes are checked before anything is compiled, so the compiler
-    /// never runs on a source nobody signed. Each stage refuses rather than
-    /// warning.
+    /// The signature is checked before the manifest is parsed, and the hashes
+    /// before anything is compiled.
     ///
     /// # Errors
     ///
     /// [`BundleError::Signature`] where the signature does not verify under the
     /// named key, and one of the others where the manifest and the sources do not
-    /// agree. Every one of them means nothing was loaded.
+    /// agree. Nothing is loaded on error.
     pub fn verified(
         manifest: &str,
         signature: &Signature,
         trusted_key: &[u8],
         mut sources: BTreeMap<String, String>,
     ) -> Result<Self, BundleError> {
-        // First, and on the bytes as they arrived. Parsing before checking would
-        // run a parser on a stranger's input to no purpose, and every stage after
-        // this one is reasoning about a document somebody vouched for.
+        // First, on the raw bytes, before any parsing.
         signature.verify(manifest.as_bytes(), trusted_key, Domain::DETECTIONS)?;
 
         let document: ManifestDocument =
@@ -308,8 +272,7 @@ impl Bundle {
                 });
             }
 
-            // Taken rather than borrowed, so what is left in `sources` at the end
-            // is exactly what the manifest did not name.
+            // Taken, so what remains is what the manifest did not name.
             let source = sources
                 .remove(&named.name)
                 .ok_or_else(|| BundleError::Missing {
@@ -358,21 +321,13 @@ impl Bundle {
 
     /// The documents a set of loose detection files should be published as.
     ///
-    /// A bundle carries detections, not the files an author kept them in: a
-    /// module whose code sits in a sibling `.rhai` is one detection, and the
-    /// signature has to cover the code as part of the document that runs it. This
-    /// resolves each such reference, so what comes back is a set of
-    /// self-contained documents keyed by name, ready for
-    /// [`manifest`](Self::manifest) and to be written out as the bundle.
+    /// A module whose code sits in a sibling `.rhai` is folded into its document,
+    /// so the signature covers the code. The result is ready for
+    /// [`manifest`](Self::manifest) and for writing out; write these documents,
+    /// not the originals, since a recipient hashes the files it receives.
     ///
-    /// Write these documents rather than the originals. A recipient hashes the
-    /// files they were given, before anything is parsed, so the bundle directory
-    /// has to hold what was signed.
-    ///
-    /// The tier comes from each document, which is safe here and nowhere else:
-    /// this reads a publisher's own files on their own machine, where
-    /// [`verified`](Self::verified) reads a stranger's and takes every tier from
-    /// the manifest instead.
+    /// The tier is read from each document, which is safe on a publisher's own
+    /// files; [`verified`](Self::verified) takes tiers from the manifest.
     ///
     /// # Errors
     ///
@@ -396,10 +351,7 @@ impl Bundle {
     /// signed with [`Signing`](crate::signature::Signing) under
     /// [`Domain::DETECTIONS`], and the signature published beside it.
     ///
-    /// Here rather than left to a publisher's own script because the two ends
-    /// have to agree exactly about which bytes are hashed and how the document is
-    /// shaped, and a crate that shipped only the checking half would be asking
-    /// every publisher to reimplement the writing half from prose.
+    /// Shipped here so both ends agree exactly on what is hashed.
     #[must_use]
     pub fn manifest(
         name: &str,
@@ -414,8 +366,7 @@ impl Bundle {
              version = \"{version}\"\n"
         );
 
-        // `BTreeMap` iterates by name, so one set of sources produces one
-        // document whatever order a publisher assembled them in.
+        // Ordered by name, so the document is deterministic.
         for (source_name, (tier, source)) in sources {
             document.push_str(&format!(
                 "\n[[detection]]\n\
@@ -447,18 +398,16 @@ impl Tier {
 #[serde(deny_unknown_fields)]
 struct ManifestDocument {
     bundle: BundleHeader,
-    /// Absent for a bundle carrying nothing, which is a bundle rather than an
-    /// error: a publisher who withdrew every detection has said so, and refusing
-    /// it would leave them no way to say it.
+    /// Absent for an empty bundle, which is valid: a publisher may withdraw
+    /// everything.
     #[serde(default)]
     detection: Vec<NamedDetection>,
 }
 
 /// `[bundle]`: what the set calls itself.
 ///
-/// Neither field decides anything. They are what a report and an operator use to
-/// say which bundle a finding came from, and they are inside the signature so a
-/// publisher's name cannot be put on somebody else's detections.
+/// Informational, and signed so a publisher's name cannot be put on somebody
+/// else's detections.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BundleHeader {
@@ -475,7 +424,7 @@ struct BundleHeader {
 struct NamedDetection {
     /// The name the source is supplied under.
     name: String,
-    /// Which tier runs it, decided here rather than read off the source.
+    /// Which tier runs it.
     tier: Tier,
     /// The SHA-256 the source is held to, lowercase hex.
     sha256: String,
@@ -483,22 +432,17 @@ struct NamedDetection {
 
 /// Whether `source` hashes to `expected`, which is lowercase hex.
 ///
-/// Compared as bytes rather than as text, so a manifest recording an
-/// upper-case digest or one with stray whitespace is a mismatch rather than a
-/// near-match nobody notices. A publisher writes what this crate wrote.
+/// Compared exactly: an upper-case digest or stray whitespace is a mismatch.
 fn hash_matches(source: &str, expected: &str) -> bool {
     sha256_hex(source) == expected
 }
 
 /// The SHA-256 of a detection source, lowercase hex, as a manifest records it.
 ///
-/// The provenance a finding carries: the corpus stamps this on every finding a
-/// detection produces, so a reader who doubts one can hash the source themselves
-/// and see whether it is the source that ran. A publisher gets it through
-/// [`Bundle::manifest`], which hashes a whole set at once; this is the same value
-/// for one source, for a caller adding a detection through
+/// The provenance stamped on every finding. [`Bundle::manifest`] computes it for
+/// a whole set; this is for one source, for a caller of
 /// [`flow`](super::corpus::DetectionsBuilder::flow) and its siblings, which take
-/// the hash rather than computing one.
+/// the hash as an argument.
 #[must_use]
 pub fn content_hash(source: &str) -> String {
     sha256_hex(source)
@@ -527,10 +471,7 @@ fn sha256_hex(source: &str) -> String {
 mod tests {
     /// Every tier is listed, once each.
     ///
-    /// `place` is exhaustive on purpose, for the reason
-    /// [`Class::ALL`](crate::detect::manifest::Class::ALL)'s own test gives: in
-    /// here `non_exhaustive` does not apply, so a tier added without a place
-    /// fails to compile rather than quietly going unlisted.
+    /// `place` is an exhaustive match, so a new tier must be listed.
     #[test]
     fn the_list_of_tiers_holds_every_one_of_them_once() {
         fn place(tier: super::Tier) -> usize {
@@ -554,8 +495,7 @@ mod tests {
     use crate::signature::{Signing, SigningKey};
     use std::io::Write;
 
-    /// A minimal, sound flow, so a bundle built from it is one the corpus would
-    /// actually compile.
+    /// A minimal flow the corpus compiles.
     const FLOW: &str = r#"
         [detection]
         id      = "bundle-test"
@@ -601,8 +541,7 @@ mod tests {
         (key, signature)
     }
 
-    /// The publisher's half and the loader's half agree, which is the whole
-    /// contract: a manifest this crate wrote is one this crate accepts.
+    /// A manifest this crate wrote is one it accepts.
     #[test]
     fn a_bundle_this_crate_wrote_is_one_it_verifies() {
         let sources = sources();
@@ -621,10 +560,7 @@ mod tests {
         assert_eq!(bundle.entries()[0].sha256().len(), 64, "a hex sha256");
     }
 
-    /// The bypass this whole module is shaped to prevent, and it is the same one
-    /// [`signature`](crate::signature) is shaped to prevent one layer down: an
-    /// attacker who serves a bundle can sign it perfectly well with a key of
-    /// their own.
+    /// A bundle signed with another key is refused.
     #[test]
     fn a_bundle_signed_by_another_key_is_refused() {
         let sources = sources();
@@ -644,9 +580,7 @@ mod tests {
         ));
     }
 
-    /// A source swapped for another after the manifest was signed fails its
-    /// hash, which is what makes the signature cover the detections rather than
-    /// only their names.
+    /// A source swapped after signing fails its hash.
     #[test]
     fn a_source_that_is_not_what_was_signed_is_refused() {
         let sources = sources();
@@ -665,12 +599,7 @@ mod tests {
         ));
     }
 
-    /// The attack signing each source separately would leave open: an attacker
-    /// who can serve files drops the detection that would have found them, and
-    /// every remaining signature still checks out.
-    ///
-    /// Signing the manifest binds the membership, so a missing source is a
-    /// refusal rather than a quietly smaller corpus.
+    /// A missing source is refused.
     #[test]
     fn a_detection_withheld_from_a_signed_set_is_refused() {
         let sources = sources();
@@ -683,8 +612,7 @@ mod tests {
         ));
     }
 
-    /// And its mirror: a source nobody signed does not ride along beside ones
-    /// somebody did.
+    /// An unsigned extra source is refused.
     #[test]
     fn a_source_the_manifest_does_not_name_is_refused() {
         let sources = sources();
@@ -715,14 +643,11 @@ mod tests {
         ));
     }
 
-    /// The tier comes from the signed manifest, never from the source, so an
-    /// attacker cannot have a compute module run as a flow or the other way
-    /// about. This is the manifest's answer surviving to the entry.
+    /// The tier comes from the signed manifest, not the source.
     #[test]
     fn the_tier_is_the_manifests_and_not_the_sources() {
         let mut sources = BTreeMap::new();
-        // A flow's source, declared as a compute module. Nothing here compiles
-        // it; what matters is which tier the loader will be told to use.
+        // A flow's source, declared as a compute module.
         sources.insert("thing.toml".to_string(), (Tier::Compute, FLOW.to_string()));
 
         let manifest = Bundle::manifest("acme", "1", &sources);
@@ -734,8 +659,7 @@ mod tests {
         assert_eq!(bundle.entries()[0].tier(), Tier::Compute);
     }
 
-    /// A manifest naming one detection twice makes the hash ambiguous, so it is
-    /// refused rather than resolved by a rule nobody would remember.
+    /// A manifest naming one detection twice is refused.
     #[test]
     fn a_manifest_naming_one_detection_twice_is_refused() {
         let sources = sources();
@@ -752,8 +676,7 @@ mod tests {
         ));
     }
 
-    /// A publisher who withdrew everything has said so, and a bundle carrying
-    /// nothing is how they say it.
+    /// An empty bundle is valid.
     #[test]
     fn a_bundle_carrying_nothing_verifies_and_carries_nothing() {
         let manifest = Bundle::manifest("acme", "2026.09.2", &BTreeMap::new());

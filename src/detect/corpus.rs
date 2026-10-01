@@ -10,27 +10,22 @@
 //!
 //! A [`Detections`] is the corpus the detection phase draws on: the Tier-1
 //! [flows](super::flow), the Tier-2 [compute modules](super::compute), and the
-//! host correlations, compiled and ready to run. The default is the
-//! corpus this build ships, embedded from `assets/detect/`; a caller who embeds the
-//! engine and wants detections about their own software adds them with a
+//! host correlations, compiled and ready to run. The default is the corpus this
+//! build ships, embedded from `assets/detect/`; a caller adds their own with a
 //! [builder](DetectionsBuilder) and passes the result to
 //! [`scan`](crate::scanner::scan).
 //!
-//! Accepting a detection from a caller is safe for the reason the
-//! [runtime](super::compute::ComputeRuntime) documents: a compute module reaches
-//! the world only through the capability verbs its class grants, and a flow carries
-//! no code at all. A caller's detection is held to the same gate and the same
-//! budgets as a shipped one, and it is validated as it is added, so the corpus a
-//! scan runs is never one the build would have refused.
+//! A compute module reaches the world only through the capability verbs its
+//! class grants (see [`ComputeRuntime`](super::compute::ComputeRuntime)), and a
+//! flow carries no code. A caller's detection is held to the same gate and
+//! budgets as a shipped one, and is validated as it is added.
 //!
 //! ## A caller's own, and somebody else's
 //!
-//! The three source calls take bytes the caller holds and is choosing to run,
-//! which is their own act. [`bundle`](DetectionsBuilder::bundle) is the other
-//! door, and it takes a [`Bundle`] rather than bytes: the
-//! only way to hold one is to have checked a signature against a key, so a
-//! stranger's detections cannot enter this corpus without somebody having named
-//! whose they are. There is no setting that changes that in either direction.
+//! The three source calls take bytes the caller chooses to run.
+//! [`bundle`](DetectionsBuilder::bundle) takes a [`Bundle`], which can only be
+//! obtained by checking a signature against a key, so a stranger's detections
+//! enter only under a named key.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -49,10 +44,8 @@ use super::source;
 
 /// The compiled corpus a scan's detection phase runs.
 ///
-/// Cheap to clone and to pass to a [`scan`](crate::scanner::scan): the three tiers
-/// sit behind [`Arc`]s, so a clone shares the compiled modules rather than
-/// recompiling them. [`Default`] and [`embedded`](Self::embedded) both give the
-/// corpus this build ships.
+/// Cheap to clone: the three tiers sit behind [`Arc`]s. [`Default`] and
+/// [`embedded`](Self::embedded) both give the corpus this build ships.
 #[derive(Clone)]
 pub struct Detections {
     flows: Arc<FlowDb>,
@@ -74,10 +67,10 @@ impl Detections {
     /// The detections this build ships, compiled from `assets/detect/`. Compiled
     /// once on the first call and shared by every caller after.
     ///
-    /// The first call is tens of milliseconds of work in a debug build. Make it
-    /// before a runtime starts, or on its blocking pool: a runtime worker busy
-    /// with it holds up the readiness of every connection in flight on it, and a
-    /// scan in flight there times each of those as that much slower than it was.
+    /// The first call takes tens of milliseconds in a debug build. Make it before
+    /// a runtime starts, or on its blocking pool: on a worker it delays every
+    /// connection in flight, and a running scan would time them as that much
+    /// slower.
     pub fn embedded() -> Self {
         EMBEDDED
             .get_or_init(|| Detections {
@@ -93,13 +86,11 @@ impl Detections {
     /// Judges a distribution's build against its distributor's data when the
     /// scan correlates its services with known vulnerabilities.
     ///
-    /// Beside the detections because it is the same kind of thing: what a scan
-    /// knows, rather than what it sends. Without it a service naming its
-    /// distribution's build (`OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`) is reported
-    /// for its upstream release's vulnerabilities at a confidence that says
-    /// the build was not checked; with it, for what the build still carries.
-    /// See [`cve::Correlator`](crate::cve::Correlator). One dataset per
-    /// distributor; the data is shared rather than copied between clones.
+    /// Without it a service naming its distribution's build
+    /// (`OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13`) is reported for its upstream
+    /// release's vulnerabilities, at a confidence saying the build was not
+    /// checked. See [`cve::Correlator`](crate::cve::Correlator). One dataset per
+    /// distributor; shared between clones.
     pub fn with_advisories(
         mut self,
         advisories: impl IntoIterator<Item = crate::cve::Advisories>,
@@ -152,13 +143,9 @@ impl Detections {
     /// Every detection in the corpus, in the order the tiers run: flows, then
     /// compute modules, then the host correlations.
     ///
-    /// What a front end lists for an operator asking what a scan would run, and
-    /// what an author checks a file against before pointing it at a network. A
-    /// summary is a copy rather than a borrow, since a listing is asked for once
-    /// and a corpus is shared behind an [`Arc`].
+    /// For a front end listing what a scan would run.
     ///
-    /// A detection appearing here is one the corpus compiled, which is not the
-    /// same as one a scan will run: whether it runs is decided by its
+    /// Whether a listed detection actually runs is decided by its
     /// [`class`](DetectionSummary::class) against the operator's
     /// [envelope](crate::config::envelope::DetectionEnvelope), and then by its
     /// gate against each port.
@@ -226,11 +213,8 @@ pub struct DetectionSummary {
     /// The intrusiveness it asks for, and the value an envelope permits or
     /// refuses it on.
     ///
-    /// [`Derived`](Class::Derived) for a host detection, which correlates ports
-    /// the scan already settled and sends nothing of its own. Not an [`Option`]:
-    /// every detection sits somewhere on the scale, and a front end drawing a
-    /// column of intrusiveness should not have to decide what an absence there
-    /// means.
+    /// [`Derived`](Class::Derived) for a host detection, which sends nothing of
+    /// its own.
     pub class: Class,
     /// What decides whether it fires.
     pub gate: Gate,
@@ -262,8 +246,7 @@ impl Default for Detections {
 }
 
 impl fmt::Debug for Detections {
-    /// The counts, not the compiled bodies: the module ASTs behind them have no
-    /// useful debug form and a great deal of noise.
+    /// The counts only; the compiled bodies have no useful debug form.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Detections")
             .field("flows", &self.flows.flows().count())
@@ -277,8 +260,7 @@ impl fmt::Debug for Detections {
 
 /// Why a caller's detection source could not be added to a [`Detections`].
 ///
-/// Each is the same objection the build raises against the shipped corpus, brought
-/// to a caller adding a detection at runtime rather than at build.
+/// The same objections the build raises against the shipped corpus.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum DetectionError {
@@ -287,8 +269,8 @@ pub enum DetectionError {
     /// A flow was structurally ill-formed. Carries every objection the validator
     /// raised, not the first.
     Flow(Vec<ValidationError>),
-    /// A flow was structurally sound but carried a pattern that will not compile,
-    /// which the runtime would read as a clean negative rather than an error.
+    /// A flow carried a pattern that will not compile, which the runtime would
+    /// read as a clean negative.
     Pattern(String),
     /// A compute module would not compile, or declared no inline source.
     Compute(String),
@@ -301,9 +283,8 @@ pub enum DetectionError {
     Body(String),
     /// A source set carried a body no detection references.
     ///
-    /// Refused rather than skipped, on the reasoning
-    /// [`BundleError::Unnamed`](super::bundle::BundleError::Unnamed) is refused
-    /// on: a file nothing loaded is a file whose author believes it is running.
+    /// Refused, as [`BundleError::Unnamed`](super::bundle::BundleError::Unnamed)
+    /// is: its author would believe it is running.
     UnusedBody {
         /// The name it arrived under.
         name: String,
@@ -381,9 +362,8 @@ impl std::error::Error for DetectionError {
 /// Builds a [`Detections`] corpus from the shipped detections plus a caller's own.
 ///
 /// Each `flow`/`compute`/`host` call validates and compiles the source as it is
-/// added, so a source the build would have refused is refused here too. The
-/// `content_hash` a caller passes is stamped on the findings a detection produces as
-/// provenance; it may be empty for a detection under development.
+/// added, as the build does. The `content_hash` is stamped on findings as
+/// provenance; it may be empty during development.
 pub struct DetectionsBuilder {
     include_embedded: bool,
     runtime: RhaiRuntime,
@@ -410,8 +390,8 @@ impl DetectionsBuilder {
         self
     }
 
-    /// Adds a Tier-1 flow from its TOML source, validated exactly as the build
-    /// validates the shipped flows.
+    /// Adds a Tier-1 flow from its TOML source, validated as the build validates
+    /// the shipped flows.
     pub fn flow(mut self, source: &str, content_hash: &str) -> Result<Self, DetectionError> {
         let flow: FlowDetection =
             toml::from_str(source).map_err(|error| DetectionError::Parse(error.to_string()))?;
@@ -419,10 +399,8 @@ impl DetectionsBuilder {
         if !errors.is_empty() {
             return Err(DetectionError::Flow(errors));
         }
-        // `check` is structural and holds no pattern engine, so it cannot tell a
-        // pattern that will not compile from one that will. The build compiles the
-        // shipped corpus's patterns; do the same for a caller's, or a bad one reads
-        // as a clean negative at scan time rather than an error here.
+        // `check` does not compile patterns, and a bad one would read as a clean
+        // negative at scan time.
         check_patterns(&flow).map_err(DetectionError::Pattern)?;
         self.flows
             .push(CompiledFlow::from_parts(flow, content_hash.to_string()));
@@ -447,24 +425,18 @@ impl DetectionsBuilder {
     /// Adds a whole set of detection sources, working out for each one which tier
     /// runs it and where its code lives.
     ///
-    /// `sources` is name to contents, the shape a directory read hands over and
-    /// the shape [`Bundle::verified`](Bundle::verified) takes its sources in.
-    /// Where they came from is the caller's business: a directory, an archive, a
-    /// database, a text box in a browser. A name ending `.toml` is a detection
-    /// document and the rest is a body a `[compute]` section may reference.
+    /// `sources` is name to contents, as [`Bundle::verified`](Bundle::verified)
+    /// also takes them. A name ending `.toml` is a detection document; the rest
+    /// are bodies a `[compute]` section may reference.
     ///
-    /// This is the door for detections the caller wrote or chose, so the tier
-    /// comes from the document: `[[step]]` for a flow, `[compute]` for a module,
-    /// `[detection.host]` for a host correlation. A bundle from somebody else
-    /// takes its tiers from the signed manifest instead, and
-    /// [`bundle`](Self::bundle) is the only way one gets in.
+    /// The tier comes from the document: `[[step]]` for a flow, `[compute]` for
+    /// a module, `[detection.host]` for a host correlation. (A [`Bundle`] takes
+    /// its tiers from the signed manifest; see [`bundle`](Self::bundle).)
     ///
-    /// Each detection is stamped with the [content
-    /// hash](super::bundle::content_hash) of what decides its behaviour: the
-    /// document for a flow or a host detection, the code for a compute module.
-    /// Those are the hashes the build records for the same files under
-    /// `assets/detect/`, so a detection keeps its provenance when it moves
-    /// between a working directory and a shipped corpus.
+    /// Each detection is stamped with the
+    /// [content hash](super::bundle::content_hash) of what decides its
+    /// behaviour (the document, or a compute module's code), matching the hashes
+    /// the build records under `assets/detect/`.
     ///
     /// # Errors
     ///
@@ -491,17 +463,12 @@ impl DetectionsBuilder {
 
     /// Adds every detection a verified [`Bundle`] carries.
     ///
-    /// The tier comes from the bundle's manifest, which is the document the
-    /// signature covers, so an attacker who served the sources cannot have a
-    /// compute module compiled as a flow or a flow run with a module's
-    /// capabilities. The `content_hash` each detection is stamped with is the one
-    /// the manifest recorded and the signature covered, so a finding names bytes
-    /// somebody signed rather than bytes that happened to be on disk.
+    /// The tier and the `content_hash` come from the signed manifest, so whoever
+    /// served the sources cannot change how a detection runs, and a finding names
+    /// signed bytes.
     ///
-    /// Each source is still validated and compiled exactly as one a caller wrote
-    /// by hand: a signature says who published a detection, never that it is
-    /// well-formed, and this refuses an ill-formed one from a trusted publisher as
-    /// readily as from anybody.
+    /// Each source is still validated and compiled as a hand-written one is: a
+    /// signature says who published a detection, not that it is well-formed.
     ///
     /// # Errors
     ///
@@ -578,12 +545,7 @@ mod tests {
         summary  = "the corpus test fired"
     "#;
 
-    /// A verified bundle reaches the corpus and its detections run, stamped with
-    /// the hash the manifest recorded rather than one the loader computed.
-    ///
-    /// The provenance is the point: a finding names the exact bytes somebody
-    /// signed, so a reader who doubts it can go and check that signature against
-    /// those bytes.
+    /// A verified bundle's detections run, stamped with the manifest's hash.
     #[test]
     fn a_verified_bundle_reaches_the_corpus_stamped_with_the_hash_that_was_signed() {
         use crate::detect::bundle::{Bundle, Tier};
@@ -628,9 +590,7 @@ mod tests {
         assert_eq!(hashes, vec![signed_hash.as_str()]);
     }
 
-    /// A signature says who published a detection and never that it is
-    /// well-formed. A bundle from a key the caller trusts is held to exactly the
-    /// validation a hand-written source is.
+    /// A trusted bundle is validated as a hand-written source is.
     #[test]
     fn a_bundle_from_a_trusted_key_is_still_validated() {
         use crate::detect::bundle::{Bundle, Tier};
@@ -638,8 +598,7 @@ mod tests {
         use std::collections::BTreeMap;
         use std::io::Write;
 
-        // Structurally sound TOML that declares no finding, which the validator
-        // refuses: a flow that can conclude nothing is dead code in a scan.
+        // A flow that declares no finding, which the validator refuses.
         let dead = r#"
             [detection]
             id = "x"
@@ -684,8 +643,8 @@ mod tests {
 
     #[test]
     fn the_builder_rejects_an_ill_formed_flow() {
-        // A flow that declares no finding is dead; the validator refuses it and so
-        // must the builder, with the validator's reasons carried out.
+        // A flow that declares no finding; the validator's reasons are carried
+        // out.
         let dead = r#"
             [detection]
             id = "x"
@@ -717,9 +676,7 @@ mod tests {
 
     #[test]
     fn the_builder_refuses_a_host_detection_with_a_non_triple_version() {
-        // Everything else is well-formed; only the version is not major.minor.patch.
-        // The build refuses this for a shipped detection, so the builder must for a
-        // caller's, or a finding's provenance would silently record 0.0.0.
+        // Only the version is not major.minor.patch.
         let host = r#"
             [detection]
             id      = "caller-host"
@@ -739,8 +696,7 @@ mod tests {
 
     #[test]
     fn the_builder_refuses_a_detection_claiming_the_reserved_namespace() {
-        // The `zond:` prefix is the engine's own; a caller must not stamp it on a
-        // finding's provenance and pass their detection off as first-party.
+        // The `zond:` prefix is reserved for first-party detections.
         let compute = r#"
             [detection]
             id      = "zond:caller"
@@ -761,9 +717,7 @@ mod tests {
 
     #[test]
     fn the_builder_refuses_a_flow_whose_pattern_will_not_compile() {
-        // Structurally sound, but the `expect` pattern is an unclosed character
-        // class. The runtime reads an uncompilable pattern as a clean negative, so
-        // the builder compiles it now and refuses, as the build does for the corpus.
+        // The `expect` pattern is an unclosed character class.
         let flow = r#"
             [detection]
             id      = "bad-pattern"
@@ -824,8 +778,7 @@ mod tests {
         assert_eq!(ids, vec!["corpus-test"], "the corpus is not caller-only");
     }
 
-    /// A directory of files, as a front end hands one over: the tier comes out of
-    /// each document and every detection reaches the corpus.
+    /// A set of files: each document's tier is read and every detection loads.
     #[test]
     fn a_source_set_is_read_by_the_tier_each_document_declares() {
         let host = r#"
@@ -854,8 +807,7 @@ mod tests {
         assert_eq!(corpus.hosts().detections().len(), 1);
     }
 
-    /// A module whose code sits in a sibling file arrives compiled, and is stamped
-    /// with the hash of that code rather than of the document naming it.
+    /// A module with its code in a sibling file is stamped with that code's hash.
     #[test]
     fn a_compute_body_in_a_sibling_file_is_resolved_and_hashed() {
         let document = r#"
@@ -895,8 +847,7 @@ mod tests {
         );
     }
 
-    /// A body no document referenced is refused. Skipping it would leave whoever
-    /// put it there believing a detection is running that was never compiled.
+    /// A body no document referenced is refused.
     #[test]
     fn a_body_nothing_references_is_refused() {
         let mut sources = BTreeMap::new();
@@ -912,9 +863,7 @@ mod tests {
         );
     }
 
-    /// An objection to one document in a set names that document. A set is read
-    /// whole, so an error that said only "the flow is ill-formed" would leave a
-    /// caller with thirty files and no idea which.
+    /// An objection to one document names that document.
     #[test]
     fn an_objection_names_the_document_that_drew_it() {
         let dead = r#"
@@ -940,9 +889,7 @@ mod tests {
         assert!(error.to_string().starts_with("in 'dead.toml':"), "{error}");
     }
 
-    /// A shipped detection read as a loose file gets the hash the build recorded
-    /// for it. Provenance follows the bytes, so a detection lifted out of
-    /// `assets/detect/` to be edited is recognisably the same one until it changes.
+    /// A shipped detection read as a loose file gets the hash the build recorded.
     #[test]
     fn a_shipped_flow_loaded_loose_keeps_the_hash_the_build_gave_it() {
         let path = concat!(
@@ -981,11 +928,8 @@ mod tests {
     /// The whole publisher-to-recipient round trip, for a module whose code sat in
     /// a sibling file.
     ///
-    /// This is the case a bundle gets wrong if it carries an author's files
-    /// rather than the detections they describe: a `.rhai` is not a document, and
-    /// signing one as though it were produces a bundle that verifies and then
-    /// will not compile. `publishable` is what resolves that, and what it returns
-    /// is both what the manifest covers and what the publisher writes out.
+    /// `publishable` folds the `.rhai` into its document; what it returns is both
+    /// what the manifest covers and what the publisher writes out.
     #[test]
     fn a_module_with_a_sibling_body_survives_being_published_and_loaded() {
         use crate::signature::{Domain, Signing, SigningKey};
@@ -1010,8 +954,7 @@ mod tests {
         authored.insert("module.toml".to_string(), document.to_string());
         authored.insert("module.rhai".to_string(), body.to_string());
 
-        // The publisher's side. The body is gone from what is published, having
-        // been resolved into the one document that carries it.
+        // The publisher's side: the body is folded into its document.
         let published = Bundle::publishable(&authored).expect("the body resolves");
         assert_eq!(published.len(), 1);
         assert!(published.contains_key("module.toml"));
@@ -1025,7 +968,7 @@ mod tests {
             .expect("the manifest is written");
         let signature = writer.finish(&key, Domain::DETECTIONS);
 
-        // The recipient's side, reading the files the publisher wrote out.
+        // The recipient's side.
         let delivered: BTreeMap<String, String> = published
             .iter()
             .map(|(name, (_, document))| (name.clone(), document.clone()))
