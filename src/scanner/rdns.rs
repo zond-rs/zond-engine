@@ -8,56 +8,45 @@
 
 //! # Reverse name resolution
 //!
-//! Attaches hostnames to discovered hosts without holding up the scan that found
-//! them. Two independent paths live here, chosen by whether the scan is privileged.
+//! Attaches hostnames to discovered hosts without holding up the scan. There are
+//! two paths, chosen by whether the scan is privileged.
 //!
-//! [`HostnameResolver`] drives the privileged path, which is both passive and
-//! active at once. It sends reverse DNS (PTR) queries for each IP handed to it,
-//! as many at a time as the other path asks, and, in parallel, sniffs raw UDP
-//! traffic for DNS (port 53) and mDNS (port 5353) responses that other activity
-//! on the network happens to surface.
-//! Whatever it learns is cached until [`HostnameResolver::resolve_hosts`] folds
-//! it into the shared host store.
+//! [`HostnameResolver`] is the privileged path. It sends reverse DNS (PTR)
+//! queries for each IP handed to it, as many at a time as the other path, and
+//! sniffs raw UDP traffic for DNS (port 53) and mDNS (port 5353) responses that
+//! other activity on the network surfaces. What it learns is cached until
+//! [`HostnameResolver::resolve_hosts`] writes it into the host store.
 //!
-//! Every name learned here is tied to an address by the *question* it answers,
-//! never by the transaction ID alone. The sniffing path sees traffic addressed
-//! to other processes and other hosts, where an ID is somebody else's counter
-//! and matching on it would file a stranger's answer against a scanned host.
-//! The reverse name in the question is the only field that means the same thing
-//! in a packet nobody sent us.
+//! Every name is tied to an address by the question it answers, not by the
+//! transaction ID alone. Sniffed traffic belongs to other processes and hosts,
+//! whose IDs are their own counters; the reverse name in the question is the
+//! only field that means the same thing in a packet nobody sent us.
 //!
-//! [`resolve_hosts_async`] is the unprivileged fallback. With no raw socket to
-//! sniff, it simply issues reverse lookups for every host that still lacks a
-//! name.
+//! [`resolve_hosts_async`] is the unprivileged fallback: reverse lookups for
+//! every host still lacking a name.
 //!
-//! Both paths name a host from the sources forward resolution reads, in the
-//! same order: the hosts file, which names an address it lists without a
-//! query, then the servers a scoped resolver names for the address's reverse
-//! zone, where the host has one, and otherwise the global ones. See
-//! [`crate::resolve`] for why a name is routed that way; a reverse name is a
-//! name like any other, and a VPN scopes its reverse zones as it scopes its
-//! domains.
+//! Both paths read the sources forward resolution reads, in the same order: the
+//! hosts file, then the servers a scoped resolver names for the address's
+//! reverse zone, then the global ones. See [`crate::resolve`]; a VPN scopes its
+//! reverse zones as it scopes its domains.
 //!
-//! Both paths ask by the routing table, whatever source a scan forced; see
-//! [`ZondConfig::send_source`](crate::config::ZondConfig::send_source) for why
-//! a lookup is not pinned.
+//! Both paths route by the routing table, whatever source a scan forced; see
+//! [`ZondConfig::send_source`](crate::config::ZondConfig::send_source).
 //!
 //! ## What answering proves
 //!
-//! Both paths above read DNS *responses*, and a machine that answers a DNS
-//! question is a name server: [`NetworkRole::DnsServer`], concluded from the
-//! protocol's own traffic rather than from a port being open. This is the only
-//! place a scan that never touches a port can conclude it, and on a local
-//! segment it is the usual place: the resolver a machine is configured with is
-//! generally the router it is scanning.
+//! A machine that answers a DNS question is a name server
+//! ([`NetworkRole::DnsServer`]), concluded from its traffic and not from an open
+//! port. This is the only place a scan that touches no port can conclude it, and
+//! on a local segment the configured resolver is usually the router being
+//! scanned.
 //!
-//! Recorded against hosts the scan already found and never against anything
-//! else, so an upstream resolver nobody asked about does not appear in a report
-//! as a host. The unprivileged fallback contributes nothing here: it asks
-//! through the system resolver, which does not say which server answered.
+//! The role is recorded only against hosts the scan already found, so an
+//! upstream resolver does not appear as a host. The unprivileged path adds
+//! nothing here, since the system resolver does not say which server answered.
 //!
-//! mDNS is not counted. It shares DNS's framing and answers on
-//! 5353, and nearly every laptop and printer on a segment responds to it.
+//! mDNS is not counted: it shares DNS's framing, and nearly every laptop and
+//! printer on a segment answers it.
 
 use hickory_resolver::config::ProtocolConfig;
 use std::net::SocketAddr;
@@ -89,40 +78,36 @@ use crate::model::ip::scoped::Zone;
 use crate::model::ip::set::IpSet;
 use crate::transport::probe::{ProbeKind, ProbeTransport, TransportError};
 
-/// Where a name server answers, and where this resolver both listens and asks.
+/// The DNS port, where this resolver both listens and asks.
 const DNS_PORT: u16 = 53;
 use crate::protocols::mdns::PORT as MDNS_PORT;
 
-/// Largest reply worth reading off the query socket. A PTR answer is tiny, but
-/// EDNS lets a server return up to this much and a truncated read would be
-/// unparseable rather than merely incomplete.
+/// Largest reply read off the query socket. A PTR answer is tiny, but EDNS lets
+/// a server return up to this much, and a truncated read would not parse.
 const MAX_DNS_DATAGRAM: usize = 4096;
 
 /// How long the resolver keeps listening after the last IP has been queried, so
-/// replies still in flight are not thrown away with the scan that asked for them.
+/// replies in flight are not lost.
 ///
-/// Once the stream of addresses has closed, it is also as long as any query
-/// still unanswered holds its place among [`REVERSE_LOOKUPS_IN_FLIGHT`]: the
-/// scan is waiting on the resolver then, and a query a resolver has let lie
-/// that long is one it is not answering.
+/// Once the address stream has closed, it is also how long an unanswered query
+/// holds its place among [`REVERSE_LOOKUPS_IN_FLIGHT`], since the scan is then
+/// waiting on the resolver.
 const REPLY_GRACE: Duration = Duration::from_millis(250);
 
 /// How long a query holds its place among [`REVERSE_LOOKUPS_IN_FLIGHT`] while
 /// the scan is still running, unanswered, before the place goes to the next
 /// address.
 ///
-/// A resolver answers a PTR in milliseconds from its leases or its cache, and
-/// one that asks upstream within a second or so; past two, the question is
-/// one it is not going to answer soon, and the addresses behind it should not
-/// wait on it. Giving the place up is not giving the question up: its ID stays
-/// outstanding, so an answer arriving later still names the address.
+/// A resolver answers a PTR in milliseconds from its cache, or within a second
+/// or so from upstream. The query's ID stays outstanding after its place is
+/// given up, so a later answer still names the address.
 const QUERY_PATIENCE: Duration = Duration::from_secs(2);
 
 /// A name as it came off the wire, already trimmed of its trailing root label.
 type Hostname = String;
 
-/// How a name reached this resolver, which is what decides between two names
-/// for one address. Ordered by trust, so comparing two is the decision.
+/// How a name reached this resolver, ordered by trust, which decides between
+/// two names for one address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Heard {
     /// Read off the wire, answering somebody else's question. Unauthenticated:
@@ -133,7 +118,7 @@ enum Heard {
     /// carrying an ID it issued, about the address it asked about.
     Answered,
     /// The hosts file's name for the address, which the system's own lookups
-    /// answer with before they ask anybody, and so is never asked here.
+    /// answer with before asking anybody.
     Listed,
 }
 
@@ -147,9 +132,8 @@ struct Named {
 /// question it answers.
 type TransID = u16;
 
-/// One resolver a reverse query is sent to, paired with the socket that can
-/// reach it. The pairing is fixed at construction so the send path never has to
-/// ask which address family a server belongs to.
+/// One resolver a reverse query is sent to, paired at construction with the
+/// socket of its address family.
 struct QueryTarget {
     server: SocketAddr,
     /// The reverse zone this server is asked for, an index into the
@@ -157,8 +141,8 @@ struct QueryTarget {
     /// scope claims.
     scope: Option<usize>,
     socket: Arc<UdpSocket>,
-    /// Whether this resolver has answered any query, which is what keeps it
-    /// asked however many others it let lie.
+    /// Whether this resolver has answered any query, which keeps it asked
+    /// however many others it ignores.
     answered: bool,
     /// How many of its queries gave up their place unanswered.
     unanswered: usize,
@@ -167,14 +151,11 @@ struct QueryTarget {
 impl QueryTarget {
     /// Whether this resolver is still sent queries.
     ///
-    /// Not once it has let a whole window of them, [`REVERSE_LOOKUPS_IN_FLIGHT`],
-    /// give up their places without answering one: a resolver that has
-    /// answered nothing by then is not answering, and asking it on would hold
-    /// every address behind it for [`QUERY_PATIENCE`], or at the end of a scan
-    /// for [`REPLY_GRACE`], window after window. The common case is a second
-    /// resolver the host is configured with that is not there, beside a first
-    /// that answers everything; one that answers slowly has answered, and is
-    /// asked on.
+    /// A resolver that lets a whole window ([`REVERSE_LOOKUPS_IN_FLIGHT`]) of
+    /// queries expire without answering any is dropped, or every address behind
+    /// it would wait [`QUERY_PATIENCE`] (or [`REPLY_GRACE`]) window after window.
+    /// The common case is a configured second resolver that does not exist. A
+    /// slow resolver has answered, and is kept.
     fn is_asked(&self) -> bool {
         self.answered || self.unanswered < REVERSE_LOOKUPS_IN_FLIGHT
     }
@@ -200,11 +181,11 @@ struct Asking {
 
 /// Passive-and-active hostname resolver for the privileged scan path.
 ///
-/// It runs as its own task ([`HostnameResolver::run`]), taking IPs to resolve off
-/// `dns_rx` as the scan discovers them, querying every configured resolver for
-/// each, and sniffing the wire for any DNS or mDNS answers that pass by. The
-/// names it gathers are held in its caches until [`HostnameResolver::resolve_hosts`]
-/// writes them back to the host store at the end of the scan.
+/// Runs as its own task ([`HostnameResolver::run`]), taking IPs off `dns_rx` as
+/// the scan discovers them, querying every configured resolver for each, and
+/// sniffing the wire for DNS and mDNS answers. The names are cached until
+/// [`HostnameResolver::resolve_hosts`] writes them to the host store at the end
+/// of the scan.
 pub struct HostnameResolver {
     /// Raw UDP receiver used to sniff DNS and mDNS responses off the wire.
     transport: ProbeTransport,
@@ -218,8 +199,8 @@ pub struct HostnameResolver {
     /// Outstanding PTR queries, keyed by transaction ID so a reply can be matched
     /// back to the IP it was asked about and the resolver it was asked of.
     dns_map: HashMap<TransID, Query>,
-    /// IPs already queried or waiting to be, so a host reported by more than
-    /// one scanning strategy is asked about once rather than once per report.
+    /// IPs already queried or waiting to be, so a host reported by several
+    /// strategies is asked about once.
     queried: HashSet<IpAddr>,
     /// IPs waiting for a place among [`REVERSE_LOOKUPS_IN_FLIGHT`], in the
     /// order they arrived.
@@ -233,11 +214,9 @@ pub struct HostnameResolver {
     hostname_map: HashMap<IpAddr, Named>,
     /// Addresses seen answering a DNS question, whoever asked it.
     ///
-    /// Two sources, and neither costs a probe: a reply to one of this
-    /// resolver's own queries, and a response sniffed off the wire that some
-    /// other machine's lookup drew. Written into the store by
-    /// [`resolve_hosts`](Self::resolve_hosts) alongside the names, since both
-    /// are findings about hosts and the store is walked once.
+    /// From replies to this resolver's own queries and from responses sniffed
+    /// off the wire. Written into the store by
+    /// [`resolve_hosts`](Self::resolve_hosts) with the names.
     name_servers: HashSet<IpAddr>,
     /// Stream of IPs to resolve, fed by the discovery and scanning strategies.
     dns_rx: UnboundedReceiver<IpAddr>,
@@ -247,21 +226,18 @@ pub struct HostnameResolver {
 
 /// Why a [`HostnameResolver`] could not be built.
 ///
-/// Two ways, and they want different answers from a caller. Nothing to ask means
-/// this host has no resolver a reverse query could reach, and a scan carries on
-/// reporting addresses without names. A receive path that will not open is a
-/// privilege problem, and it is the same one every raw path here has.
+/// No server to ask means a scan carries on reporting addresses without names.
+/// A receive path that will not open is the privilege problem every raw path
+/// has.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ResolverError {
     /// No resolver could be reached, so there is nothing to ask.
     ///
-    /// Raised where the caller named the resolvers to ask: none were named,
-    /// or every socket that would carry a query refused to bind. Each refusal
-    /// is warned about as it happens; this is what is left when none
-    /// succeeded. A resolver built from the host's own configuration runs
-    /// without one, naming hosts from the hosts file and the traffic it
-    /// sniffs.
+    /// Raised where the caller named the resolvers to ask: none were named, or
+    /// every query socket refused to bind (each refusal is warned about). A
+    /// resolver built from the host's own configuration runs without any,
+    /// naming hosts from the hosts file and sniffed traffic.
     #[error("no reachable DNS server to send reverse queries to")]
     NoServer,
 
@@ -273,14 +249,13 @@ pub enum ResolverError {
 impl HostnameResolver {
     /// Builds a resolver that reads IPs to resolve from `dns_rx`.
     ///
-    /// It reads the hosts file and works out which resolvers can answer for
-    /// the hosts being scanned (see `Routes`), binds a query socket for each
-    /// address family they span, and opens the raw receiver used to sniff DNS
-    /// and mDNS traffic.
+    /// Reads the hosts file and the resolvers that can answer for the scanned
+    /// hosts (see `Routes`), binds a query socket per address family, and opens
+    /// the raw receiver that sniffs DNS and mDNS.
     ///
-    /// A host with no resolver to ask still gets a resolver: the hosts file
-    /// and the traffic it sniffs name hosts without a query, and the missing
-    /// configuration is said once, as forward resolution says it.
+    /// A host with no resolver configured still gets one, naming hosts from the
+    /// hosts file and sniffed traffic; the missing configuration is reported
+    /// once.
     pub fn new(dns_rx: UnboundedReceiver<IpAddr>) -> Result<Self, ResolverError> {
         let routes = Routes::from_system();
         let transport = ProbeTransport::open_receiver(ProbeKind::UdpResolve)?;
@@ -290,9 +265,8 @@ impl HostnameResolver {
     /// [`new`](Self::new), sniffing only on `links` and the links replies
     /// from the resolvers it queries arrive by.
     ///
-    /// For a scan that knows its targets: an mDNS answer about one of them
-    /// comes over the target's own link, and a unicast answer over the link
-    /// toward the server that gives it. See
+    /// An mDNS answer about a target arrives over the target's link, a unicast
+    /// answer over the link toward its server. See
     /// [`capture_links_toward`](crate::transport::probe::capture_links_toward).
     pub(crate) fn capturing_on(
         dns_rx: UnboundedReceiver<IpAddr>,
@@ -316,23 +290,17 @@ impl HostnameResolver {
     }
 
     /// Builds a resolver that queries `dns_servers` and sniffs through
-    /// `transport`, rather than discovering both from the host.
+    /// `transport`, without reading the host's configuration.
     ///
-    /// Both of `new`'s environmental dependencies are parameters here. That
-    /// matters for testing: reading the host's resolver configuration gives a
-    /// different answer on every machine and fails outright on some CI images,
-    /// and the raw receiver needs privileges that a test runner does not have.
-    /// Pointing this at a DNS server on loopback and a synthetic transport
-    /// (`ProbeTransport::from_parts`, behind the `test-support` feature)
-    /// exercises the PTR exchange and the sniffing path with neither.
+    /// For tests: the host's resolver configuration differs per machine (and is
+    /// missing on some CI images), and the raw receiver needs privileges. A
+    /// loopback DNS server and a synthetic transport
+    /// (`ProbeTransport::from_parts`, behind the `test-support` feature) exercise
+    /// both paths without either. The query sockets are real, unprivileged
+    /// sockets on ephemeral ports.
     ///
-    /// The query sockets are still real ones, bound to ephemeral ports in the
-    /// families `dns_servers` spans. They need no privileges, and keeping them
-    /// real is the point: the query and reply handling under test is the same
-    /// code that runs in production.
-    ///
-    /// Every server in `dns_servers` is asked about every address, and no
-    /// hosts file is read.
+    /// Every server in `dns_servers` is asked about every address, and no hosts
+    /// file is read.
     pub fn with_transport(
         dns_rx: UnboundedReceiver<IpAddr>,
         transport: ProbeTransport,
@@ -379,21 +347,16 @@ impl HostnameResolver {
     /// Runs the resolver's event loop until the IP stream closes and every
     /// address it carried has been asked about.
     ///
-    /// On each turn it does one of four things: take a newly arrived IP, read a
-    /// reply to a query it sent, absorb a DNS or mDNS packet sniffed off the
-    /// wire, or give up the place of a query left unanswered too long. Between
-    /// turns it asks about as many waiting IPs as there are places free, which
-    /// is as many as the unprivileged path asks about at once. Once `dns_rx`
-    /// closes, the queries still in flight have a short grace to be answered,
-    /// and the IPs still waiting are asked in turn, before it returns itself,
-    /// so the caller can hand the collected names to
+    /// Each turn takes a new IP, reads a reply to a sent query, absorbs a sniffed
+    /// DNS or mDNS packet, or expires a query left unanswered too long. Between
+    /// turns it asks about as many waiting IPs as there are free places. Once
+    /// `dns_rx` closes, in-flight queries get a short grace and waiting IPs are
+    /// still asked. Returns itself for
     /// [`resolve_hosts`](Self::resolve_hosts).
     pub async fn run(mut self) -> Self {
         let (v4, v6) = self.reply_sockets();
-        // Whether the capture still has anything to give. A closed stream is
-        // ready forever, so its arm has to be switched off rather than polled:
-        // left enabled it would spin the loop instead of waiting in it, and end
-        // the reply window the moment it was entered.
+        // A closed stream is ready forever, so its arm must be switched off or
+        // it would spin the loop.
         let mut sniffing = true;
         // Whether more IPs may arrive, switched off for the same reason.
         let mut arriving = true;
@@ -428,10 +391,7 @@ impl HostnameResolver {
             }
         }
 
-        // Frames the capture lifted off the wire before the scan ended may still
-        // be queued behind it. They cost nothing to read and were paid for
-        // already, so take whatever is there rather than dropping names the
-        // network has in fact already told us.
+        // Read frames still queued from before the scan ended.
         while let Ok(reply) = self.transport.rx.try_recv() {
             self.absorb_sniffed(&reply.bytes, reply.source);
         }
@@ -443,9 +403,8 @@ impl HostnameResolver {
     /// about, one the hosts file names, or one no reverse lookup can answer
     /// for.
     ///
-    /// An address the hosts file lists is named from it and asked of nobody,
-    /// as the system's own lookups name it, and as forward resolution answers
-    /// a name the file lists: see [`Snapshot::reverse`].
+    /// An address the hosts file lists is named from it and not queried, as the
+    /// system's own lookups do; see [`Snapshot::reverse`].
     fn enqueue(&mut self, ip: IpAddr) {
         if !self.queried.insert(ip) {
             return;
@@ -468,9 +427,8 @@ impl HostnameResolver {
     /// waiting, each given [`QUERY_PATIENCE`] to be answered while more IPs
     /// may be `arriving` and [`REPLY_GRACE`] once none will.
     ///
-    /// With no resolver left that is still asked (see
-    /// [`QueryTarget::is_asked`]), the waiting IPs are let go: there is nobody
-    /// to ask.
+    /// With no resolver still asked (see [`QueryTarget::is_asked`]), the waiting
+    /// IPs are dropped.
     async fn ask_waiting(&mut self, arriving: bool) {
         if !self.query_targets.iter().any(QueryTarget::is_asked) {
             self.waiting.clear();
@@ -485,8 +443,7 @@ impl HostnameResolver {
             && let Some(ip) = self.waiting.pop_front()
         {
             match self.send_dns_query(&ip).await {
-                // Nobody to ask about this address: its zone's servers cannot
-                // be reached, or have stopped being asked.
+                // Its zone's servers are unreachable or no longer asked.
                 Ok(ids) if ids.is_empty() => {}
                 Ok(ids) => {
                     info!(
@@ -503,8 +460,8 @@ impl HostnameResolver {
         }
     }
 
-    /// Brings every place's end forward to `until` where it is later, for
-    /// the stream of IPs having closed: see [`REPLY_GRACE`].
+    /// Brings every place's end forward to `until`, once the IP stream has
+    /// closed; see [`REPLY_GRACE`].
     fn hurry(&mut self, until: Instant) {
         for asking in self.asking.values_mut() {
             asking.until = asking.until.min(until);
@@ -550,12 +507,10 @@ impl HostnameResolver {
     /// reached, and none when there is nobody to ask.
     ///
     /// The zone's resolvers are the servers of the longest scoped reverse zone
-    /// covering the address, where one does, and only those, as the OS asks
-    /// them; otherwise every global resolver and gateway (see [`Routes`]).
-    /// Every one of them is asked rather than the first that answers, because
-    /// a negative answer is not evidence that the name does not exist: a
-    /// resolver that declines to serve a reverse zone answers exactly as fast,
-    /// and exactly as confidently, as one that has looked and found nothing.
+    /// covering the address, as the OS asks them, or otherwise every global
+    /// resolver and gateway (see [`Routes`]). All are asked, because a resolver
+    /// that declines to serve a reverse zone answers as fast and as confidently
+    /// as one that looked and found nothing.
     async fn send_dns_query(&mut self, ip: &IpAddr) -> std::io::Result<Vec<TransID>> {
         let name = reverse_name(*ip);
         let scope = self
@@ -583,8 +538,7 @@ impl HostnameResolver {
             let packet = dns::build_ptr_packet(*ip, id);
             match target.socket.send_to(&packet, target.server).await {
                 Ok(_) => sent.push((id, index)),
-                // The server is named here because the error will not say which
-                // of several this was.
+                // Name the server; the error does not say which one.
                 Err(error) => {
                     last_error = Some(std::io::Error::new(
                         error.kind(),
@@ -607,11 +561,10 @@ impl HostnameResolver {
 
     /// Handles a reply that arrived on a query socket.
     ///
-    /// A reply counts only when it comes from the resolver a transaction ID
-    /// still outstanding was sent to, *and* answers the question that ID was
-    /// spent on. Both have to agree: the ID is a 16-bit counter and the socket
-    /// is open to the whole network, so the question name is what makes a
-    /// forged or stale reply fail to match rather than rename a host.
+    /// A reply counts only when it comes from the resolver an outstanding ID was
+    /// sent to and answers that ID's question. The ID is a 16-bit counter on a
+    /// socket open to the network, so the question name is what stops a forged
+    /// or stale reply from renaming a host.
     fn absorb_reply(&mut self, payload: &[u8], from: SocketAddr) {
         if !self.query_targets.iter().any(|t| t.server == from) {
             return;
@@ -625,13 +578,10 @@ impl HostnameResolver {
             }
         };
 
-        // It answered, which is the whole of the claim and is settled before the
-        // checks below. Those decide whether this reply names *a host*; a
-        // resolver that declines the question, or answers one we are no longer
-        // waiting on, is a name server either way.
+        // Any parseable reply makes it a name server; the checks below only
+        // decide whether it names a host.
         self.name_servers.insert(from.ip());
-        // One server can be asked for a scoped zone and for the rest alike, and
-        // answering either says it answers.
+        // One server may be a target for several scopes.
         for target in self.query_targets.iter_mut().filter(|t| t.server == from) {
             target.answered = true;
         }
@@ -643,9 +593,7 @@ impl HostnameResolver {
             return;
         }
 
-        // The question has been answered, one way or the other; the other
-        // resolvers asked about this IP are still outstanding on their own IDs,
-        // and the IP holds its place until they have answered too.
+        // The IP holds its place until every resolver asked has answered.
         self.dns_map.remove(&response.id);
         if let Some(asking) = self.asking.get_mut(&ip) {
             asking.ids.retain(|id| *id != response.id);
@@ -655,23 +603,20 @@ impl HostnameResolver {
         }
 
         match response.hostname {
-            // A name that is the address written again is declined here rather
-            // than filtered later: recorded, it would keep the mDNS answer below
-            // from ever being asked for. See `restates`.
+            // A name that restates the address is declined here, or it would
+            // block an mDNS name later. See `restates`.
             Some(hostname) if restates(&hostname, ip) => info!(
                 verbosity = 2,
                 "{from} named {ip} after itself ({hostname}), so it has no name"
             ),
             Some(hostname) => match self.hostname_map.entry(ip) {
-                // Two resolvers this scan asked, both checked the same way. The
-                // first stands, so the name does not depend on which reply the
-                // network happened to deliver last.
+                // Between two answers the first stands, so the name does not
+                // depend on arrival order.
                 Entry::Occupied(slot) if slot.get().heard >= Heard::Answered => info!(
                     verbosity = 2,
                     "{from} resolved {ip} to {hostname}; an earlier answer stands"
                 ),
-                // A name somebody else's lookup carried past is only a
-                // placeholder until an answer arrives, however early it came.
+                // An overheard name is replaced by an answer.
                 Entry::Occupied(mut slot) => {
                     info!(
                         incoming,
@@ -702,11 +647,8 @@ impl HostnameResolver {
     /// Routes a sniffed UDP segment to the DNS or mDNS handler by its source
     /// port, ignoring anything from another port.
     ///
-    /// Nothing here is reported as a failure. Everything the capture yields is
-    /// unsolicited third-party traffic - the host's own browsing, other
-    /// machines' service discovery - so a segment that will not parse, or that
-    /// concerns no address, is simply not ours. Logging each one would turn
-    /// ordinary background traffic into a wall of scan errors.
+    /// Nothing here is reported as a failure: the capture yields unsolicited
+    /// third-party traffic, and a segment that will not parse is simply not ours.
     fn absorb_sniffed(&mut self, segment: &[u8], source: IpAddr) {
         let Some(udp_packet) = UdpPacket::new(segment) else {
             return;
@@ -714,9 +656,8 @@ impl HostnameResolver {
 
         match udp_packet.get_source() {
             DNS_PORT => {
-                // Somebody else's lookup, answered in front of us. The name in
-                // it may be about a host the scan never found; the machine that
-                // sent it is one we can see, and it just served DNS.
+                // Somebody else's lookup: whatever the name, the sender just
+                // served DNS.
                 if dns::is_response(udp_packet.payload()) {
                     self.name_servers.insert(source);
                 }
@@ -729,27 +670,15 @@ impl HostnameResolver {
 
     /// Caches the name in a DNS response that was never asked for.
     ///
-    /// Somebody else's reverse lookup answers our question just as well, so the
-    /// transaction ID is beside the point here - the response is matched purely
-    /// on the address its question names. A name for a host the scan never found
-    /// costs nothing: [`resolve_hosts`](Self::resolve_hosts) only applies what
-    /// matches a host in the store.
+    /// Matched on the address its question names; the transaction ID is someone
+    /// else's. [`resolve_hosts`](Self::resolve_hosts) applies only names for
+    /// hosts in the store.
     ///
-    /// **It fills a gap, never displaces, and gives way.** Nothing authenticates
-    /// a packet read off the wire: anyone who can put a datagram with source
-    /// port 53 in front of the capture chooses both the address and the name.
-    /// That is acceptable for an address nothing else has named - an overheard
-    /// name is better than none, and the log line says which it was - and it is
-    /// not acceptable against [`absorb_reply`](Self::absorb_reply), which took a
-    /// reply from a resolver it had asked, carrying a transaction ID it had
-    /// issued, over a question naming the address it had asked about.
-    ///
-    /// In either order: an answer already held is not displaced, and an answer
-    /// arriving later replaces what was only overheard, so a forged reply sent
-    /// ahead of the real one holds its place only until the real one comes. The
-    /// engine ranks its evidence this way everywhere else:
-    /// [`HostStatus`](crate::model::host::HostStatus) is ordered by how strong
-    /// the evidence is and `record_evidence` refuses to lower it.
+    /// A sniffed packet is unauthenticated: anyone who can put a datagram from
+    /// port 53 in front of the capture chooses the address and the name. So an
+    /// overheard name only fills a gap: it never displaces an existing name, and
+    /// an [`absorb_reply`](Self::absorb_reply) answer arriving later replaces it.
+    /// [`HostStatus`](crate::model::host::HostStatus) ranks evidence the same way.
     fn absorb_sniffed_dns(&mut self, payload: &[u8]) {
         let Ok(response) = dns::parse_ptr_response(payload) else {
             return;
@@ -787,16 +716,10 @@ impl HostnameResolver {
 
     /// Files what one mDNS record says under every address it names.
     ///
-    /// Every one of them, because which of a device's addresses the store knows
-    /// it by is not something the record can predict. The scan may have reached
-    /// it at one address and never at another, or its exclusions may forbid one,
-    /// and an excluded address never joins a host's record. Filed under only one
-    /// of them, the name would be lost whenever that one is not among the
-    /// host's, and the device reported at its other addresses without the name
-    /// it announced for all of them.
+    /// Under every address, because the record cannot predict which of them the
+    /// store knows the device by (the scan may not reach some, or exclude them).
     ///
-    /// A later record naming an address replaces an earlier one there, since
-    /// the latest announcement is the device's current word about it.
+    /// A later record naming an address replaces an earlier one there.
     fn file_mdns(&mut self, host: MdnsHost) {
         info!(
             verbosity = 2,
@@ -820,21 +743,13 @@ impl HostnameResolver {
     /// any mDNS record, which can supply a hostname and additional IPs.
     /// Consumed entries are removed from the caches as they are applied.
     ///
-    /// Every address is asked for a DNS name before any is asked for an mDNS
-    /// record, so a name unicast DNS gave the host is preferred whichever of its
-    /// addresses the record was found at. A record is filed under every address
-    /// it names, and in a single pass one found at an address that sorts first
-    /// would name the host before a resolver's answer about another address was
-    /// read.
+    /// All addresses are checked for a DNS name before any for an mDNS record,
+    /// so a unicast DNS name wins whichever address each was found at.
     ///
-    /// Written through [`ScanContext::write_host`] like every other finding, so
-    /// a name reaches the event stream as well as the store. Applied by
-    /// iterating the map directly it would not, and a consumer watching a scan
-    /// would see its hosts arrive unnamed and never hear they had been named.
-    ///
-    /// The addresses are collected before any of them is written. `write_host`
-    /// takes the store's own lock, and taking it while iterating the map would
-    /// deadlock against whichever shard the iterator is holding.
+    /// Written through [`ScanContext::write_host`], so names reach the event
+    /// stream as well as the store. The addresses are collected first, since
+    /// `write_host` takes the store's lock and would deadlock against an
+    /// iterator.
     pub fn resolve_hosts(&mut self, ctx: &ScanContext) {
         for key in ctx.host_addresses() {
             let (hostname_map, mdns_cache) = (&mut self.hostname_map, &mut self.mdns_cache);
@@ -845,9 +760,8 @@ impl HostnameResolver {
                 let ips = host.ips().clone();
 
                 for ip in &ips {
-                    // Not `else`-chained with the names below: a resolver that
-                    // answers about other hosts and has no name of its own is
-                    // the ordinary case for a router.
+                    // Independent of naming: a router often answers DNS with no
+                    // name of its own.
                     if name_servers.contains(ip) {
                         named |= host.add_network_role(NetworkRole::DnsServer);
                     }
@@ -878,8 +792,8 @@ impl HostnameResolver {
         }
     }
 
-    /// One socket per address family in use, for the receive arms of the event
-    /// loop. Taken once up front so the loop borrows nothing of `self` to listen.
+    /// One socket per address family in use, for the event loop's receive arms,
+    /// so the loop does not borrow `self` to listen.
     fn reply_sockets(&self) -> (Option<Arc<UdpSocket>>, Option<Arc<UdpSocket>>) {
         let socket_for = |ipv4: bool| {
             self.query_targets
@@ -900,9 +814,8 @@ impl HostnameResolver {
 /// Receives one datagram on `socket`.
 ///
 /// Never resolves when the family has no socket, so the event loop can carry an
-/// arm for both families whether or not both are in use. A socket that fails
-/// goes quiet for the same reason: a failed socket keeps failing, and retrying
-/// one in a `select!` arm would spin the loop rather than wait on it.
+/// arm for both families. A failed socket also goes quiet, since retrying it in
+/// a `select!` arm would spin the loop.
 async fn recv_reply(socket: &Option<Arc<UdpSocket>>) -> (Vec<u8>, SocketAddr) {
     let socket = match socket {
         Some(socket) => socket,
@@ -922,9 +835,8 @@ async fn recv_reply(socket: &Option<Arc<UdpSocket>>) -> (Vec<u8>, SocketAddr) {
 /// Binds a query socket for each address family `servers` spans and pairs every
 /// server with the socket that can reach it and the zone it is asked for.
 ///
-/// A family whose socket will not bind - a host with IPv6 disabled, say - loses
-/// its servers rather than taking the whole resolver down with it; each
-/// refusal is warned about as it happens.
+/// A family whose socket will not bind (IPv6 disabled, say) loses its servers;
+/// each refusal is warned about.
 fn bind_query_targets(
     servers: &[(SocketAddr, Option<usize>)],
     scopes: &[ReverseScope],
@@ -985,8 +897,7 @@ fn bind_family(
     }
 }
 
-/// Opens a UDP socket on an ephemeral port of `bind_addr`, for asking rather
-/// than for listening.
+/// Opens a UDP socket on an ephemeral port of `bind_addr`, for sending queries.
 fn bind_ephemeral(bind_addr: &str) -> std::io::Result<UdpSocket> {
     let socket = std::net::UdpSocket::bind(bind_addr)?;
     socket.set_nonblocking(true)?;
@@ -997,10 +908,10 @@ fn bind_ephemeral(bind_addr: &str) -> std::io::Result<UdpSocket> {
 struct ReverseScope {
     /// Folded, as [`covers`] compares it.
     domain: String,
-    /// Why none of the zone's servers can be asked, when none can. Its
-    /// addresses are then asked of nobody, rather than of the global servers.
+    /// Why none of the zone's servers can be asked, when none can. Its addresses
+    /// are then not queried at all; the global servers are not a fallback.
     unasked: Option<String>,
-    /// Whether `unasked` has been said, which it is once.
+    /// Whether `unasked` has been reported, which happens once.
     said: bool,
 }
 
@@ -1031,23 +942,16 @@ impl Routes {
     /// default gateways make.
     ///
     /// An address under a scoped reverse zone is asked of that zone's servers
-    /// alone. A VPN that serves the reverse zone of its own addresses installs
-    /// one, and a PTR for one of them asked of any other server fails there
-    /// and tells it which private address the scan found.
+    /// alone. A VPN serving the reverse zone of its own addresses installs one,
+    /// and asking any other server would fail and leak which private address the
+    /// scan found.
     ///
     /// Every other address goes to the configured resolvers and to each
-    /// interface's default gateway. The configured resolvers are not enough on
-    /// their own. A LAN scan asks about private addresses, and RFC 6303 has a
-    /// general-purpose resolver answer for those reverse zones itself rather
-    /// than forward them - so a VPN's resolver, or any public one, returns
-    /// NXDOMAIN for every host on the link no matter what names the local
-    /// network actually has. The gateway is added because on a home or office
-    /// LAN it is the DHCP server, and so the one host that can map a lease
-    /// back to a name. Gateways are taken per interface rather than from the
-    /// default route: with a VPN up the default route belongs to the tunnel,
-    /// while the LAN being scanned hangs off a gateway that no route to the
-    /// internet passes through - which is exactly the case where the
-    /// configured resolver cannot help.
+    /// interface's default gateway. Under RFC 6303 a general-purpose resolver
+    /// answers private reverse zones itself with NXDOMAIN, whatever names the
+    /// local network has. On a home or office LAN the gateway is the DHCP server,
+    /// the one host that can map a lease to a name. Gateways are taken per
+    /// interface, since with a VPN up the default route belongs to the tunnel.
     fn of(hosts: HostsTable, dns: DnsConfig, gateways: Vec<SocketAddr>) -> Self {
         let mut servers = Vec::new();
 
@@ -1075,15 +979,14 @@ impl Routes {
             push_unique(&mut servers, (gateway, None));
         }
 
-        // Only a reverse zone can cover an address's reverse name, so a
-        // forward domain's resolver is left out rather than carried unused.
+        // Only a reverse zone can cover a reverse name.
         let mut scoped: Vec<ScopedServers> = dns
             .scoped
             .into_iter()
             .filter(|scope| scope.domain.ends_with(".arpa"))
             .collect();
-        // Stable, so of two resolvers for one zone the one listed first, which
-        // the OS orders first, is the one asked.
+        // Stable, so of two resolvers for one zone the one the OS lists first
+        // is asked.
         scoped.sort_by_key(|scope| std::cmp::Reverse(scope.domain.len()));
 
         let mut scopes = Vec::with_capacity(scoped.len());
@@ -1125,8 +1028,7 @@ fn gateways() -> Vec<SocketAddr> {
             push_unique(&mut servers, SocketAddr::new(IpAddr::V4(*ip), DNS_PORT));
         }
         for ip in &gateway.ipv6 {
-            // A link-local gateway is only reachable through the interface it
-            // sits on, and a plain `SocketAddr` carries no scope to say which.
+            // A link-local gateway needs a scope, which a `SocketAddr` lacks.
             if !ip.is_unicast_link_local() {
                 push_unique(&mut servers, SocketAddr::new(IpAddr::V6(*ip), DNS_PORT));
             }
@@ -1151,8 +1053,7 @@ fn udp_port(name_server: &hickory_resolver::config::NameServerConfig) -> Option<
 
 /// Adds `server` unless it is already listed.
 ///
-/// A linear scan because the list is a handful of resolvers and order is worth
-/// keeping: the platform lists them in the order it wants them tried.
+/// A linear scan over a handful of resolvers, keeping the platform's order.
 fn push_unique<T: PartialEq>(servers: &mut Vec<T>, server: T) {
     if !servers.contains(&server) {
         servers.push(server);
@@ -1161,21 +1062,16 @@ fn push_unique<T: PartialEq>(servers: &mut Vec<T>, server: T) {
 
 /// Active-only reverse resolution for the unprivileged scan path.
 ///
-/// Without raw sockets there is nothing to sniff, so this looks up every host
-/// that answered and still lacks a hostname, from the hosts file and the
-/// servers forward resolution would ask. The lookups run concurrently, at
-/// most thirty-two at a time so a wide range floods neither the resolver nor
-/// the descriptor table, and each answer is written back through
-/// [`ScanContext::write_host`] so it announces itself like any other finding.
-/// A host with no DNS server configured still names what its hosts file
-/// lists, and says once that the rest went unasked.
+/// Looks up every host that answered and still lacks a hostname, from the hosts
+/// file and the servers forward resolution would ask, at most thirty-two at a
+/// time. Each answer is written through
+/// [`ScanContext::write_host`], so it reaches the event stream. A host with no
+/// DNS server configured still names what its hosts file lists, and reports
+/// once that the rest went unasked.
 ///
-/// A host nothing was heard from, one still
-/// [`Unknown`](crate::model::host::HostStatus::Unknown), is not looked up. It
-/// is a record a port scan filed while asking an address, not a host anything
-/// found, and a scan of one port over a wide range files one per silent
-/// address: resolving them would send the resolver a query per address the
-/// scan found nothing at, where naming the hosts it found needs one per host.
+/// A host still [`Unknown`](crate::model::host::HostStatus::Unknown) is not
+/// looked up: it is a record a port scan filed for a silent address, and a wide
+/// scan files one per address.
 pub async fn resolve_hosts_async(ctx: &ScanContext) {
     resolve(ctx, Unheard::Skipped).await;
 }
@@ -1185,20 +1081,17 @@ pub async fn resolve_hosts_async(ctx: &ScanContext) {
 pub(crate) enum Unheard {
     /// Only hosts that answered are named, which is every scan but one below.
     Skipped,
-    /// Every host is named, answered or not: a scan whose caller asked for
-    /// every address listed as a host, with
-    /// [`assume_up`](crate::config::ZondConfig::assume_up), lists these too,
-    /// and a listed host is one worth a name.
+    /// Every host is named, answered or not, for a scan with
+    /// [`assume_up`](crate::config::ZondConfig::assume_up), which lists every
+    /// address as a host.
     Named,
 }
 
 /// The hosts a reverse lookup asks about: every one still unnamed, less those
 /// nothing was heard from unless `unheard` says to name them.
 ///
-/// Keyed by the address the host is stored under rather than by `primary_ip`,
-/// so the write that follows lands on the entry that was read. The two agree
-/// for most hosts and not for one whose leading address changed after it was
-/// first credited.
+/// Keyed by the store key, not `primary_ip`, so the write lands on the entry
+/// that was read; the two differ for a host whose primary address changed.
 fn to_resolve(ctx: &ScanContext, unheard: Unheard) -> Vec<crate::model::ip::scoped::ScopedIp> {
     ctx.hosts_owed_passes()
         .into_iter()
@@ -1215,32 +1108,25 @@ fn to_resolve(ctx: &ScanContext, unheard: Unheard) -> Vec<crate::model::ip::scop
 
 /// How many addresses a reverse lookup asks about at once, on either path.
 ///
-/// One lookup per host found, or per address under a scan that lists every
-/// address as a host, so a wide range asks tens of thousands, and all of them
-/// at once would flood the one resolver the whole network shares. The resolver
-/// on a home router forwards at most 150 queries at once for everyone behind
-/// it by default, and this leaves it most of that. A resolver answers a PTR in
-/// milliseconds, from its leases or its cache, so thirty-two in flight still
-/// name thousands of hosts a second; only a resolver that answers nothing makes
-/// the bound what a scan waits on.
+/// A wide range asks tens of thousands of lookups, which at once would flood the
+/// network's shared resolver. A home router's resolver forwards at most 150
+/// queries at once by default, and this leaves it most of that. PTR answers
+/// take milliseconds, so thirty-two in flight still name thousands of hosts a
+/// second.
 ///
-/// Through the system resolver each lookup also holds a UDP socket for every
-/// name server it asks in parallel, two by the resolver library's default, so
-/// thirty-two hold sixty-four descriptors: inside the half of even a 256-file
-/// limit the process keeps for itself, beside connections that may still be
-/// open. Each waits out its ten seconds of retries on a resolver that does not
-/// answer. [`HostnameResolver`] asks on one socket per family, and an address
-/// it asks about gives its place up after [`QUERY_PATIENCE`], or stops being
-/// asked of a resolver that answers nothing at all; see
-/// [`QueryTarget::is_asked`].
+/// Through the system resolver each lookup holds a UDP socket per name server
+/// asked in parallel (two by default), so thirty-two hold sixty-four
+/// descriptors, within half of even a 256-file limit. Each waits out ten
+/// seconds of retries on a resolver that does not answer. [`HostnameResolver`]
+/// uses one socket per family, and gives up an address's place after
+/// [`QUERY_PATIENCE`]; see also [`QueryTarget::is_asked`].
 const REVERSE_LOOKUPS_IN_FLIGHT: usize = 32;
 
 /// [`resolve_hosts_async`], naming the hosts nothing was heard from where
 /// `unheard` says to.
 ///
-/// Reads the hosts file and the resolver configuration once, as a forward
-/// resolution pass does, and asks every address of that one reading; see
-/// [`Snapshot::reverse`] for where each is answered.
+/// Reads the hosts file and resolver configuration once and asks every address
+/// against that reading; see [`Snapshot::reverse`].
 pub(crate) async fn resolve(ctx: &ScanContext, unheard: Unheard) {
     let snapshot = Arc::new(crate::resolve::Resolver::from_system().snapshot());
     resolve_from(ctx, unheard, snapshot).await;
@@ -1265,27 +1151,19 @@ async fn resolve_from(ctx: &ScanContext, unheard: Unheard, snapshot: Arc<Snapsho
 /// [`resolve`], asking `lookup` for each address's name, at most `in_flight`
 /// at a time.
 ///
-/// Every lookup's answer is read, whatever order they finish in and whichever
-/// of them found nothing: an address with no name says nothing about the next.
+/// Every answer is read, in whatever order lookups finish; an address with no
+/// name says nothing about the next.
 ///
-/// Two things end it before every address is asked. A stop, which it reads
-/// while it waits rather than between answers, so a scan stopped in its tail
-/// ends then and keeps the names already in; the lookups in flight are
-/// dropped. And a resolver that has let a whole window, `in_flight`, go
-/// unanswered without answering one, on the rule
-/// [`QueryTarget::is_asked`] applies on the other path, so that until it
-/// first answers it is asked no more than that window: each costs its full
-/// retries, so asking on would cost one window of those for every
-/// `in_flight` hosts found, and for a wide scan that is hours spent on a
-/// resolver that is not there. One that answers slowly has answered, and is
-/// asked on.
+/// Two things end it early. A stop, noticed while waiting, which drops the
+/// lookups in flight and keeps the names already in. And a route that lets a
+/// whole window (`in_flight`) of lookups go unanswered before answering any, the
+/// rule [`QueryTarget::is_asked`] applies on the other path: each unanswered
+/// lookup costs its full retries, so asking on could spend hours on a resolver
+/// that is not there. A slow resolver has answered, and is kept.
 ///
-/// That rule is kept per `route`, the way each address's lookup goes, as the
-/// other path keeps it per server: a global resolver that answers nothing
-/// says nothing about the server a VPN scopes to its own reverse zone, and
-/// the addresses under that zone are asked of it whatever the other does.
-/// The bound on lookups in flight is shared, since it is there for the
-/// descriptor table and the network as well as for any one resolver.
+/// That rule is kept per `route`, so a dead global resolver does not stop the
+/// server a VPN scopes to its own reverse zone. The in-flight bound is shared,
+/// since it protects the descriptor table and the network too.
 async fn resolve_with<R, F, Fut>(
     ctx: &ScanContext,
     unheard: Unheard,
@@ -1311,8 +1189,7 @@ async fn resolve_with<R, F, Fut>(
     let mut turn = 0;
 
     loop {
-        // Round the routes in turn, so a slow one does not hold the others'
-        // addresses back until its own are done.
+        // Round-robin over routes, so a slow one does not hold up the others.
         while set.len() < in_flight
             && let Some(index) = (0..routes.len())
                 .map(|offset| (turn + offset) % routes.len())
@@ -1324,8 +1201,8 @@ async fn resolve_with<R, F, Fut>(
                 break;
             };
             route.in_flight += 1;
-            // The query takes the address; the key comes back with the answer,
-            // so the write below lands on the entry that was read.
+            // The key comes back with the answer, so the write lands on the
+            // entry that was read.
             let asked = lookup(key.addr());
             let task = set.spawn(async move { (key, asked.await) });
             spawned.insert(task.id(), index);
@@ -1345,8 +1222,7 @@ async fn resolve_with<R, F, Fut>(
             continue;
         };
         let name = match reverse {
-            // Read from the hosts file: nothing was asked, so it says nothing
-            // about whether the resolver answers.
+            // From the hosts file: says nothing about the resolver.
             Reverse::Listed(name) => name,
             Reverse::Named(name) => {
                 route.answered = true;
@@ -1366,8 +1242,7 @@ async fn resolve_with<R, F, Fut>(
         name_host(ctx, key, &name);
     }
 
-    // Whatever is left waits on a route that never answered: one that has
-    // answered is asked until it has nothing left.
+    // Anything left waits on a route that never answered.
     let unasked: usize = routes.iter().map(|(_, route)| route.waiting.len()).sum();
     if unasked > 0 && !ctx.handle.should_stop() {
         info!(
@@ -1380,11 +1255,9 @@ async fn resolve_with<R, F, Fut>(
 
 /// Names the hosts a scan found from the hosts file alone, sending nothing.
 ///
-/// For a scan forbidden to ask names of anybody. The hosts file is not a
-/// query: reading it sends nothing, and it is where a lab box reached over a
-/// VPN gets its name, the same file that scan's targets were resolved from.
-/// A box named as a target is found under that name, and the same box found
-/// by sweeping its range is found under it too.
+/// For a scan forbidden to send name queries. Reading the hosts file sends
+/// nothing, and it is often where a lab box reached over a VPN gets its name,
+/// so a box found by sweeping is named as it would be when targeted by name.
 pub(crate) fn name_from_hosts_file(ctx: &ScanContext, unheard: Unheard) {
     name_listed(ctx, unheard, &HostsTable::read_system());
 }
@@ -1441,37 +1314,27 @@ impl Route {
         }
     }
 
-    /// Whether this way has an address to ask and may be asked it: until it
-    /// has answered once, the lookups it let lie count against the window as
-    /// well as those in flight, so the first window is all a silent one is
-    /// asked.
+    /// Whether this way has an address to ask and may be asked. Until it first
+    /// answers, unanswered lookups count against the window with those in
+    /// flight, so a silent route is asked one window only.
     fn is_asked(&self, window: usize) -> bool {
         !self.waiting.is_empty() && (self.answered || self.unanswered + self.in_flight < window)
     }
 }
 
-/// Whether `name` is `ip` written out as a label rather than a name for it.
+/// Whether `name` is just `ip` written out as a label.
 ///
-/// A resolver that answers a reverse lookup for every address in a range,
-/// whether or not anything is there, does it by writing the address into the
-/// label: `203.0.113.26` comes back as `203-0-113-26.lan`. Consumer routers do
-/// this by default, and cloud providers do it deliberately.
+/// Consumer routers and cloud providers answer a reverse lookup for any address
+/// by writing the address into the label: `203.0.113.26` comes back as
+/// `203-0-113-26.lan`. That says nothing the address does not, and since a
+/// unicast answer is preferred to an mDNS one, accepting it would keep the
+/// machine's real name from being recorded.
 ///
-/// That is not a name, and accepting it costs more than an empty column. It
-/// carries nothing the address does not already carry, and it fills the one slot
-/// a real name would take: this engine prefers a unicast answer to an mDNS one,
-/// so a synthesised PTR does not merely sit beside the machine's actual name, it
-/// keeps the scan from ever recording it.
-///
-/// The test is decidable, not a guess about shape. An address cannot appear
-/// literally in a label, since its own separator is the label separator, so a
-/// resolver writing one has to substitute: a dot becomes a dash or an underscore
-/// and a colon becomes a dash. Each substitution is undone and the result read
-/// back as an address, then compared against the very address the answer was
-/// about. A machine genuinely called `10-4-good-buddy` is not an address and
-/// keeps its name; one called `203-0-113-26` while answering at some other
-/// address keeps its name too, because there the name says something the address
-/// does not.
+/// A label cannot hold an address literally, so a resolver substitutes: a dot
+/// becomes a dash or underscore, a colon a dash. Each substitution is undone,
+/// the result parsed as an address and compared with the address asked about.
+/// A machine called `10-4-good-buddy` keeps its name, and so does one called
+/// `203-0-113-26` answering at a different address.
 fn restates(name: &str, ip: IpAddr) -> bool {
     address_written_as_a_label(name) == Some(ip)
 }
@@ -1480,9 +1343,8 @@ fn restates(name: &str, ip: IpAddr) -> bool {
 fn address_written_as_a_label(name: &str) -> Option<IpAddr> {
     let label = name.split('.').next()?;
 
-    // A dot for IPv4 and a colon for IPv6, each in the two spellings a label is
-    // allowed to carry. `fe80--1` is `fe80::1` under the second, which is the
-    // same substitution applied twice and needs no special case.
+    // A dot for IPv4 and a colon for IPv6. `fe80--1` parses as `fe80::1` with
+    // no special case.
     let substituted = [
         label.replace('-', "."),
         label.replace('_', "."),
@@ -1496,21 +1358,18 @@ fn address_written_as_a_label(name: &str) -> Option<IpAddr> {
         return Some(ip);
     }
 
-    // The other shape: the address as leading labels of its own, `203.0.113.26`
-    // in front of the domain rather than inside one label. Rarer, because it
-    // needs the resolver to hand out a name four labels deep, and produced by
-    // enough of them to be worth reading.
+    // The rarer shape: the address as its own leading labels, `203.0.113.26`
+    // in front of the domain.
     let labels: Vec<&str> = name.split('.').collect();
     (2..=labels.len()).find_map(|take| labels[..take].join(".").parse().ok())
 }
 
 /// Whether it is worth sending a PTR query for `ip`.
 ///
-/// IPv6 addresses are queried only when they are global unicast, since link-local
-/// and other special-purpose addresses will not resolve. Every IPv4 address is
-/// queried, private ranges included, except loopback: RFC 6761 section 6.3 has
-/// its reverse zone answered on the machine and never sent to a server, so a
-/// loopback address has the name the hosts file gives it or none.
+/// IPv6 addresses only when global unicast; other kinds will not resolve. Every
+/// IPv4 address, private ranges included, except loopback: under RFC 6761
+/// section 6.3 its reverse zone is answered locally, so a loopback address has
+/// the hosts file's name or none.
 fn is_queryable(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V6(ipv6_addr) => ip::is_global_unicast(ipv6_addr),
@@ -1537,14 +1396,8 @@ mod tests {
     use std::net::Ipv4Addr;
     use tokio::sync::mpsc::UnboundedSender;
 
-    /// A reverse lookup names the hosts that answered and leaves the records
-    /// nothing was heard from alone, unless the caller asked for every
-    /// address listed as a host.
-    ///
-    /// A scan of one port over a wide range files one such record per silent
-    /// address. Named, each would cost the resolver a query about an address
-    /// the scan found nothing at: tens of thousands for a /16, where the hosts
-    /// it found need one each.
+    /// A reverse lookup names the hosts that answered and skips silent records,
+    /// unless the caller listed every address as a host.
     #[test]
     fn a_reverse_lookup_names_only_the_hosts_that_answered_unless_asked_for_all() {
         let (_session, ctx) = ScanSession::new();
@@ -1568,12 +1421,8 @@ mod tests {
         assert_eq!(asked(Unheard::Named), [at(1), at(2)]);
     }
 
-    /// **Reverse lookups are bounded in flight, and every answer is read.**
-    /// A scan listing every address as a host asks one lookup per address, and
-    /// all at once they flood the network's one resolver and fill the
-    /// process's descriptor table. And a lookup that found no name is one
-    /// address without one, never the end of the answers: the ones still
-    /// coming name hosts of their own.
+    /// Reverse lookups are bounded in flight, and every answer is read: one
+    /// address without a name does not end the others.
     #[tokio::test]
     async fn reverse_lookups_are_bounded_in_flight_and_every_answer_is_read() {
         use std::sync::atomic::AtomicUsize;
@@ -1601,7 +1450,7 @@ mod tests {
                         return Reverse::Unnamed;
                     };
                     let last = v4.octets()[3];
-                    // The unnamed answer first, so an early one ends nothing.
+                    // Unnamed answers arrive first.
                     let wait = if last % 2 == 0 { 1 } else { 5 };
                     tokio::time::sleep(Duration::from_millis(wait)).await;
                     in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -1630,10 +1479,8 @@ mod tests {
         assert_eq!(named, 20, "every host with a name was named");
     }
 
-    /// **A host with no DNS server configured still names what its hosts
-    /// file lists.** A lab VM whose boxes have names only there would
-    /// otherwise report every one by address, and the lookups reach no
-    /// server, so none is waited on.
+    /// A host with no DNS server configured still names what its hosts file
+    /// lists, and waits on no server.
     #[tokio::test]
     async fn with_no_dns_server_configured_the_hosts_file_still_names_hosts() {
         let (_session, ctx) = ScanSession::new();
@@ -1665,12 +1512,8 @@ mod tests {
         assert_eq!(name(2), None);
     }
 
-    /// **Under no name queries, a host the scan found is still named from
-    /// the hosts file.** Reading it sends nothing, and a lab box listed there
-    /// is the target a VPN user names; found by sweeping its range it would
-    /// otherwise be reported by address alone, where named as a target it is
-    /// found under its name. A host nothing was heard from is left alone, as
-    /// a lookup leaves it.
+    /// With name queries forbidden, a found host is still named from the hosts
+    /// file. A host nothing was heard from is left alone, as a lookup leaves it.
     #[test]
     fn the_hosts_file_names_found_hosts_without_a_query() {
         let (_session, ctx) = ScanSession::new();
@@ -1693,11 +1536,8 @@ mod tests {
         assert_eq!(name(3), None, "a host nothing was heard from was named");
     }
 
-    /// **A stopped scan stops looking names up.** The lookups are the tail of
-    /// every scan that resolves names, and one stopped there would otherwise
-    /// wait out every lookup still to ask, each up to its full retries. The
-    /// lookups here never answer, so the only way the call returns is the
-    /// stop.
+    /// A stopped scan stops looking names up. The lookups here never answer, so
+    /// only the stop can end the call.
     #[tokio::test]
     async fn a_stopped_scan_stops_looking_names_up() {
         let (session, ctx) = ScanSession::new();
@@ -1712,7 +1552,7 @@ mod tests {
             handle.abort();
         });
 
-        // Generous, and only so a failure reads as one rather than as a hang.
+        // Only so a failure reads as one and not as a hang.
         tokio::time::timeout(
             Duration::from_secs(60),
             resolve_with(
@@ -1728,10 +1568,8 @@ mod tests {
         stopper.await.expect("the stop was asked for");
     }
 
-    /// **A resolver that answers nothing is asked one window and no more.**
-    /// Every lookup it lets lie costs its full retries, so asking it about
-    /// every host a wide scan found would spend a window of those per
-    /// window of hosts. One that has answered anything is asked on.
+    /// A resolver that answers nothing is asked one window and no more; one
+    /// that has answered anything is asked on.
     #[tokio::test]
     async fn a_resolver_that_answers_nothing_is_asked_one_window() {
         use std::sync::atomic::AtomicUsize;
@@ -1771,20 +1609,16 @@ mod tests {
         assert_eq!(asked(true).await, 40, "one that answered was given up on");
     }
 
-    /// **A silent resolver is given up on alone.** A VPN scopes a resolver to
-    /// the reverse zone of its own addresses, and that one answers whether or
-    /// not the global resolver does; giving up on both when the global one
-    /// goes quiet leaves every address under the zone unnamed.
+    /// A silent global resolver is given up on alone; a VPN's scoped resolver
+    /// is still asked for its zone.
     #[tokio::test]
     async fn a_silent_global_resolver_leaves_a_scoped_zone_asked() {
         use std::sync::atomic::AtomicUsize;
 
         const BOUND: usize = 4;
         let (_session, ctx) = ScanSession::new();
-        // Whichever order the addresses are asked in, one count shared by both
-        // resolvers fails one of the two checks below: the scoped zone's
-        // answers keep the silent one asked, or the silent one's window of
-        // silence stops the scoped zone being asked.
+        // A count shared by both routes would fail one of the checks below,
+        // whatever the order.
         for last in 1..=20 {
             for network in [[192, 0, 2], [203, 0, 113]] {
                 ctx.update_host(v4(network[0], network[1], network[2], last), |host| {
@@ -1832,8 +1666,7 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
 
-    /// Every spelling a resolver reaches for when it has to put an address in a
-    /// label, and the address it was answering about.
+    /// The spellings resolvers use to put an address in a label.
     #[test]
     fn an_address_written_into_a_label_is_recognised_as_one() {
         let subject = v4(203, 0, 113, 26);
@@ -1852,7 +1685,7 @@ mod tests {
         }
     }
 
-    /// IPv6, where the substitution is the same one applied to a colon.
+    /// IPv6, where a colon becomes a dash.
     #[test]
     fn an_ipv6_address_written_into_a_label_is_recognised_too() {
         let subject: IpAddr = "2001:db8::1".parse().expect("an address");
@@ -1862,11 +1695,7 @@ mod tests {
         assert!(restates("fe80--1.example", link_local));
     }
 
-    /// A name that is a name keeps it, dashes and all.
-    ///
-    /// The failure this guards against is a filter that reads shape rather than
-    /// meaning: plenty of real names carry digits and dashes, and a rule about
-    /// how a name *looks* would take them.
+    /// A real name with digits and dashes is kept.
     #[test]
     fn a_real_name_is_not_mistaken_for_an_address() {
         let subject = v4(203, 0, 113, 26);
@@ -1883,23 +1712,14 @@ mod tests {
         }
     }
 
-    /// An address that is not *this* address is a name, whatever it looks like.
-    ///
-    /// The test compares against the address the answer was about rather than
-    /// asking whether the label is an address at all. A host at one address
-    /// named after another is saying something the address does not, and this
-    /// engine has no business deciding it is wrong.
+    /// A label spelling some other address is a name.
     #[test]
     fn a_label_naming_some_other_address_is_left_alone() {
         assert!(!restates("198-51-100-1.lan", v4(203, 0, 113, 26)));
     }
 
-    /// The point of the whole exercise: a synthesised name never reaches the
-    /// map, so the mDNS answer that would otherwise have been passed over is
-    /// still the one the host ends up with.
-    ///
-    /// Through the wire format rather than past it, because the guard is only
-    /// worth anything where a real answer arrives.
+    /// A synthesised name never reaches the map, so a real name can still fill
+    /// the slot. Tested through the wire format.
     #[tokio::test]
     async fn a_synthesised_name_overheard_is_never_recorded() {
         let mut resolver = resolver_asking(vec![
@@ -1968,8 +1788,7 @@ mod tests {
 
     /// A resolver holding one name for `ip`, with no sockets behind it.
     fn resolver_holding(ip: IpAddr, hostname: &str) -> HostnameResolver {
-        // Never queried. `resolve_hosts` only folds the caches into the store,
-        // but the constructor insists on somewhere to send to.
+        // Never queried, but the constructor needs a server.
         let mut resolver = resolver_asking(vec![
             "127.0.0.1:53".parse().expect("a valid socket address"),
         ]);
@@ -1983,11 +1802,9 @@ mod tests {
         resolver
     }
 
-    /// A DNS *response* about `subject`, built from the query this engine sends
-    /// so the message is one a real server could have produced.
-    ///
-    /// It carries no answer, which is deliberate: a server that has no name for
-    /// an address, or declines to look, has still answered in DNS.
+    /// A DNS response about `subject`, built from the engine's own query. It
+    /// carries no answer: a server with no name for the address has still
+    /// answered.
     fn dns_response(subject: IpAddr) -> Vec<u8> {
         let mut message = dns::build_ptr_packet(subject, 0x1234);
         message[2] |= 0b1000_0000; // QR: this is a response
@@ -2002,17 +1819,9 @@ mod tests {
             .expect("a datagram")
     }
 
-    /// A host that answered a DNS question is a name server, and that is how a
-    /// scan which never touches a port concludes it at all.
-    ///
-    /// On a local segment this is the *usual* way: the machine a scan asks for
-    /// names is generally the router it is scanning, and the answer is proof in
-    /// DNS's own protocol. Without this, a scan would come back with every
-    /// hostname resolved and no idea what had resolved them.
-    ///
-    /// The second half is the trap on exactly those segments. mDNS shares DNS's
-    /// framing and answers on 5353, and nearly every laptop and printer speaks
-    /// it, so the identical message from that port must name nobody.
+    /// A host that answered a DNS question is a name server. The identical
+    /// message from 5353 is mDNS, which nearly every laptop and printer speaks,
+    /// and names nobody.
     #[tokio::test]
     async fn a_machine_that_answers_dns_is_a_name_server_and_an_mdns_responder_is_not() {
         let server = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));
@@ -2049,9 +1858,7 @@ mod tests {
         );
     }
 
-    /// An mDNS record names every address its host answers at, and folding
-    /// them into the host is how a scan learns a machine's other addresses. The
-    /// ones the scan is forbidden to report are not among what it learns.
+    /// An mDNS record's addresses join the host, except excluded ones.
     #[tokio::test]
     async fn an_mdns_record_does_not_carry_an_excluded_address_into_a_host() {
         use crate::model::exclusion::Exclusions;
@@ -2091,13 +1898,8 @@ mod tests {
         assert!(!ips.contains(&excluded), "{ips:?}");
     }
 
-    /// A device whose IPv4 address the scan may not report is still named at
-    /// the addresses it may.
-    ///
-    /// The excluded address is the forbidden fact, not the name the device
-    /// announced beside it. A record is found by any address it names, so the
-    /// one the policy keeps out of the store cannot take the name with it, and
-    /// the policy still keeps that address off the host the name lands on.
+    /// A device whose IPv4 address is excluded is still named at its other
+    /// addresses, and the excluded address stays off the host.
     #[tokio::test]
     async fn a_device_named_at_an_excluded_address_keeps_its_name_at_the_others() {
         use crate::model::exclusion::Exclusions;
@@ -2133,10 +1935,8 @@ mod tests {
     /// A name unicast DNS gave a host is preferred to one its mDNS responder
     /// announced, whichever of the host's addresses each was found at.
     ///
-    /// A record is found at every address it names, so it can turn up at an
-    /// address that sorts before the one a resolver answered about. Read
-    /// address by address in a single pass, the order the addresses sort in
-    /// would decide which name the host keeps.
+    /// A record filed at an address that sorts before the resolved one must not
+    /// win.
     #[tokio::test]
     async fn a_resolved_name_is_preferred_to_an_announced_one_at_any_address() {
         let announced_at = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 61));
@@ -2161,13 +1961,8 @@ mod tests {
         assert_eq!(hostname.as_deref(), Some("tv.example"));
     }
 
-    /// The reply to our own reverse query proves the same thing, and only from
-    /// a resolver we actually asked.
-    ///
-    /// The second half is what the socket needs: it is open to the whole
-    /// network, so anything can send a DNS-shaped datagram to it, and a scan
-    /// that named the sender a name server would be reporting whoever spoke
-    /// last.
+    /// A reply to our own query marks a name server only if it came from a
+    /// resolver we asked; the socket is open to the whole network.
     #[tokio::test]
     async fn only_a_resolver_the_scan_asked_is_named_by_its_answer() {
         let asked = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 53));
@@ -2202,11 +1997,8 @@ mod tests {
         );
     }
 
-    /// A hostname is a finding like any other, so attaching one has to announce
-    /// itself. Writing straight into the map would bypass
-    /// [`ScanContext::write_host`], which owns the lock-then-announce ordering,
-    /// so a consumer watching the event stream would see a host appear without
-    /// a name and never hear that it had gained one.
+    /// Attaching a hostname goes through [`ScanContext::write_host`], so it
+    /// reaches the event stream.
     #[tokio::test]
     async fn attaching_a_hostname_announces_it_like_any_other_finding() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
@@ -2230,8 +2022,7 @@ mod tests {
         );
     }
 
-    /// A resolver with nothing for a host must not announce a change it did not
-    /// make, or every scan ends with one spurious event per host.
+    /// A resolver with nothing for a host announces no change.
     #[tokio::test]
     async fn a_host_the_resolver_has_nothing_for_is_left_alone() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11));
@@ -2252,8 +2043,7 @@ mod tests {
         assert!(session.events().try_recv().is_none(), "nothing changed");
     }
 
-    /// A PTR response for `subject` carrying `name`, which the fixtures above
-    /// have no way to build: `dns_response` deliberately answers nothing.
+    /// A PTR response for `subject` carrying `name`.
     fn named_response(subject: IpAddr, name: &str) -> Vec<u8> {
         answer(&dns::build_ptr_packet(subject, 0x1234), name)
     }
@@ -2319,12 +2109,8 @@ mod tests {
             .collect()
     }
 
-    /// **An address under a scoped reverse zone is asked of that zone's
-    /// servers alone, and one under a zone none of whose servers can be
-    /// reached is asked of nobody.** A VPN that serves the reverse zone of its
-    /// own addresses installs a resolver scoped to it; the same PTR sent to
-    /// the global resolvers and gateways fails there and tells them which
-    /// private address the scan found.
+    /// An address under a scoped reverse zone is asked of that zone's servers
+    /// alone, and one under a zone with no reachable server is asked of nobody.
     #[tokio::test]
     async fn an_address_under_a_scoped_reverse_zone_is_asked_of_its_servers_alone() {
         let (global, scoped) = (SilentUdpPort::open(), SilentUdpPort::open());
@@ -2359,10 +2145,8 @@ mod tests {
         assert_eq!(questions_asked(&global), vec!["7.113.0.203.in-addr.arpa."]);
     }
 
-    /// **An address the hosts file lists is named from it and asked of
-    /// nobody, and a loopback address it does not list is not asked either.**
-    /// The file is authoritative for what it lists, as it is forward, and a
-    /// loopback address's reverse zone never leaves the machine (RFC 6761).
+    /// An address the hosts file lists is named from it without a query, and an
+    /// unlisted loopback address is not queried either (RFC 6761).
     #[tokio::test]
     async fn an_address_the_hosts_file_lists_is_named_without_a_query() {
         let server = SilentUdpPort::open();
@@ -2391,11 +2175,8 @@ mod tests {
         assert!(!resolver.hostname_map.contains_key(&v4(127, 0, 0, 9)));
     }
 
-    /// The privileged resolver asks about as many addresses at once as the
-    /// unprivileged path does and no more, however many the scan hands it.
-    /// Every host a sweep finds is handed over as it is found, so a wide range
-    /// would otherwise put a query per host in front of the one resolver the
-    /// network shares, all at once.
+    /// The privileged resolver asks about at most as many addresses at once as
+    /// the unprivileged path, however many the scan hands it.
     #[tokio::test]
     async fn the_privileged_resolver_asks_about_a_bounded_number_of_addresses_at_once() {
         let server = SilentUdpPort::open();
@@ -2407,8 +2188,7 @@ mod tests {
         let running = tokio::spawn(resolver.run());
 
         server.arrived(REVERSE_LOOKUPS_IN_FLIGHT).await;
-        // Long enough for every query sent at once to have arrived, and far
-        // inside the patience that would free a place.
+        // Long enough for every query to arrive, well inside the patience.
         tokio::time::sleep(QUERY_PATIENCE / 10).await;
         assert_eq!(
             server.datagrams().len(),
@@ -2424,9 +2204,7 @@ mod tests {
     }
 
     /// A resolver that answers nothing is asked one window of queries and then
-    /// no more, and the scan's end waits on it no longer than the reply grace.
-    /// A host configured with a second resolver that is not there would
-    /// otherwise hold every address behind it in turn.
+    /// no more.
     #[tokio::test]
     async fn a_resolver_that_answers_nothing_is_asked_one_window_and_no_more() {
         let server = SilentUdpPort::open();
@@ -2444,9 +2222,7 @@ mod tests {
         assert_eq!(server.datagrams().len(), REVERSE_LOOKUPS_IN_FLIGHT);
     }
 
-    /// Every address waiting behind the bound is still asked about, and each
-    /// answer names its own: a bound that let the addresses past the first
-    /// window go would name thirty-two hosts of any scan.
+    /// Every address waiting behind the bound is still asked and named.
     #[tokio::test]
     async fn every_address_behind_the_bound_is_asked_and_named() {
         let server = Arc::new(
@@ -2485,13 +2261,7 @@ mod tests {
         assert_eq!(resolver.hostname_map.len(), 100);
     }
 
-    /// **An overheard name does not displace one a resolver answered for.**
-    ///
-    /// The sniffed path is unauthenticated by design and says so. What it may
-    /// not do is outrank the path that checked the source, the transaction ID
-    /// and the question - which a plain `insert` would let it do, in either
-    /// order and without a word, because `insert` reports only the absence it
-    /// replaced.
+    /// An overheard name does not displace one a resolver answered for.
     #[tokio::test]
     async fn an_overheard_name_does_not_displace_a_resolved_one() {
         let ip = v4(203, 0, 113, 40);
@@ -2512,12 +2282,8 @@ mod tests {
         );
     }
 
-    /// **Nor does it keep its place by arriving first.**
-    ///
-    /// The other order, and the one an attacker chooses: a forged answer sprayed
-    /// across the target range as a scan starts reaches the capture before the
-    /// resolver it imitates has replied. Kept for having arrived, it would block
-    /// the resolver's name for good.
+    /// Nor does it keep its place by arriving first, as a forged answer sprayed
+    /// at the start of a scan would.
     #[tokio::test]
     async fn an_overheard_name_that_arrives_first_gives_way_to_the_resolver() {
         let ip = v4(203, 0, 113, 42);
@@ -2550,10 +2316,7 @@ mod tests {
         );
     }
 
-    /// Between two resolvers this scan asked, the first answer stands. Both
-    /// passed the same checks, so neither outranks the other, and keeping the
-    /// first is what keeps the name from depending on which reply the network
-    /// delivered last.
+    /// Between two resolvers this scan asked, the first answer stands.
     #[tokio::test]
     async fn between_two_resolvers_asked_the_first_answer_stands() {
         let ip = v4(203, 0, 113, 43);
@@ -2580,7 +2343,7 @@ mod tests {
         );
     }
 
-    /// And it still fills a gap, which is the whole reason the path exists.
+    /// An overheard name still fills a gap.
     #[tokio::test]
     async fn an_overheard_name_still_names_an_address_nothing_else_has() {
         let ip = v4(203, 0, 113, 41);
