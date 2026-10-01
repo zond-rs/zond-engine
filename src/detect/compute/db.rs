@@ -671,6 +671,38 @@ JSEncryptRSAKey.prototype.getPrivateKey = function () {
         assert!(shipped("private-key-served", &served("text/plain", &mismatched)).is_none());
     }
 
+    /// **The `none` finding says what was seen:** a token served unsigned. No
+    /// forged token is sent, so nothing shows the server accepting one.
+    #[test]
+    fn jwt_weak_algorithm_reports_a_served_unsigned_token_and_claims_no_more() {
+        // `{"alg":"none","typ":"JWT"}` and `{"sub":"1"}`, base64url, no signature.
+        let unsigned = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIn0.";
+        // The same claims under `{"alg":"HS256","typ":"JWT"}`.
+        let signed = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+        let token = |jwt: &str| {
+            shipped(
+                "jwt-weak-algorithm",
+                &served("application/json", &format!("{{\"token\":\"{jwt}\"}}")),
+            )
+        };
+
+        let finding = token(unsigned).expect("an unsigned token was missed");
+        assert!(token(signed).is_none(), "a signed token was flagged");
+
+        let manifest = ComputeDb::global()
+            .detections()
+            .iter()
+            .find(|d| d.manifest().id == "jwt-weak-algorithm")
+            .expect("the detection ships")
+            .manifest();
+        for claim in [manifest.title.as_str(), finding.title()] {
+            assert!(
+                !claim.contains("accept"),
+                "`{claim}` claims the server accepts what it was only seen to issue"
+            );
+        }
+    }
+
     #[test]
     fn a_journalled_run_of_a_shipped_detection_replays() {
         use crate::detect::compute::{CapTape, CapTapeRecord, DetectionRunRecord};

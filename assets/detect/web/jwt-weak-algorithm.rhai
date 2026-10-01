@@ -1,8 +1,10 @@
-// JWT accepts the unsigned 'none' algorithm.
+// JWT served with the unsigned 'none' algorithm.
 //
-// A JSON Web Token served with a header alg of "none" carries no signature, so
-// anyone can forge one the server will accept. The token is found in the gathered
-// response, its header decoded from base64url, and the algorithm read.
+// A JSON Web Token served with a header alg of "none" carries no signature. What
+// is observed is the server issuing one; a server that issues unsigned tokens
+// usually accepts them, and then anyone can forge one. Whether it does is not
+// tested. The token is found in the gathered response, its header decoded from
+// base64url, and the algorithm read.
 
 fn first_http_text(responses) {
     for raw in responses {
@@ -39,7 +41,7 @@ fn analyze(ctx, responses) {
     [ #{
         severity: "high",
         summary: "A JSON Web Token is served with the unsigned 'none' algorithm",
-        detail: "the token header declares alg=none, so its payload is unsigned and can be forged",
+        detail: "the token header declares alg=none, so its payload is unsigned; a server that accepts the tokens it issues accepts forged ones",
         references: [ #{ cwe: 347 } ],
     } ]
 }
