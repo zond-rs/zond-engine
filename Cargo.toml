@@ -11,253 +11,46 @@ readme = "README.md"
 description = "The core networking library powering Zond. Raw packet injection, protocol parsing, service and OS fingerprinting, and asynchronous network scanning."
 keywords = ["network", "scanner", "portscan", "discovery", "security"]
 categories = ["network-programming", "asynchronous"]
-# What a published crate does not need to carry.
-#
-# `audit/` is design records and point-in-time assessments: not user-facing, and
-# gitignored as well, so this line is the second of two defences rather than the
-# only one. `docs/` held internal working notes and holds nothing now; it is named
-# here anyway, because the cost is a word and the alternative is that whoever
-# reintroduces the directory has to know to come back and add it. `.github/` is
-# this repository's own CI and belongs to nobody who depends on the crate, and
-# `deny.toml` is what that CI holds the dependency tree to.
-#
-# `tests/data/distro/` holds excerpts of Debian's and Ubuntu's advisory feeds,
-# which the converter tests read. They are the distributors' data under their
-# own terms (Ubuntu's is CC BY-SA 4.0), and the crate carries none of it.
-#
-# `assets/` is deliberately *not* excluded: `build.rs` compiles the fingerprint
-# signatures out of it, so a package without it does not build at all.
 exclude = ["audit/", "todo/", "docs/", ".github/", "deny.toml", "fuzz/", "tests/data/distro/"]
 
-# What docs.rs is asked to build, which is not what it builds by default.
-#
-# Its default is this crate's default features, which are `export-json` and
-# `journal-format` — so every import format, four of the five export formats,
-# `ImportError`, `Settings` and `ReportReader` would be absent from the page
-# `documentation` above points a stranger at. The lint workflow builds
-# `--all-features` and so cannot see that; this is the line that makes the two
-# agree.
-#
-# `--cfg docsrs` turns on the `doc_cfg` feature in `lib.rs`, which is what puts
-# "Available on crate feature `export-csv` only" beside an item. Without it a
-# reader who finds `CsvExporter` has no way to learn from the documentation that
-# it needs a feature at all. Nightly-only, and gated on `docsrs` so no other
-# build is asked for it; `doc_auto_cfg` was the name until 1.92 merged it here.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# `docsrs` is set by the stanza above and by nothing else, so every other build
-# has to be told it is a name this crate expects rather than a typo.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
 
 [features]
 default = ["export-json", "journal-format"]
 
-# The scan journal's on-disk format: the framing every scan is written through,
-# and the reader `--resume` continues one from. On by default because journalling
-# is not opt-in — the whole argument for it is that a user should never have had
-# to decide, before a scan started, whether they would want to resume it.
-#
-# It pulls in `serde_json` and nothing else, and it gates only the format:
-# `journal::paths` needs nothing and stays present either way, so a front end can
-# locate and list journals without compiling the reader.
 journal-format = ["dep:serde_json"]
-
-# Report export as a single JSON document, the canonical output format. On by
-# default because a scanner nobody can get results out of is not much of a
-# scanner. It pulls in `serde_json` and nothing else; a consumer who only wants
-# the live API can turn it off and the `export` module keeps its schema types
-# and its `Exporter` trait, which cost only the `serde` already depended on.
 export-json = ["dep:serde_json"]
-
-# CISA's Known Exploited Vulnerabilities catalogue, read from the JSON CISA
-# publishes: as the list a correlation marks what it reports by, in place of the
-# copy this crate ships, or as a catalogue of its own. It pulls in `serde_json`,
-# which the journal and the JSON exporter already share, and nothing else.
 import-kev = ["dep:serde_json"]
-
-# The National Vulnerability Database's feed, converted into the same dataset.
-# What `import-kev` cannot give: NVD carries the version ranges a vulnerability
-# applies to, so a finding says *this release is affected* rather than *this
-# product has had vulnerabilities*. It filters against the shipped fingerprint
-# corpus, so it needs that corpus and the `serde_json` the other importers
-# already share, and nothing else.
 import-nvd = ["dep:serde_json"]
-
-# Debian's and Ubuntu's own verdicts on the builds they ship, converted into the
-# dataset the correlator judges a distribution build against: Debian's security
-# tracker and Ubuntu's published OSV and OpenVEX archives. What `import-nvd`
-# cannot give: a distribution backports fixes without moving the upstream
-# version, and only the distributor knows which of its builds carry which fix.
-# It pulls in `serde_json`, `tar` to walk Ubuntu's archives, and `liblzma` to
-# read them as the `.tar.xz` Ubuntu publishes: thirty-six gigabytes of JSON
-# behind a hundred megabytes, which a pure-Rust decoder takes eleven minutes
-# over and liblzma under one. It is built from its bundled source and linked
-# statically, so a binary never depends on a system library; that source is
-# under 0BSD.
 import-distro = ["dep:serde_json", "dep:tar", "dep:liblzma"]
-
-# The same data one record per line: streamable, and a file cut off part way
-# through is still readable. Shares `serde_json` and the DTOs with `export-json`,
-# so it costs nothing on top of it.
 export-jsonl = ["dep:serde_json"]
-
-# A flat table, one row per host and port, for the spreadsheet and compliance
-# audience. Adds no dependency at all — the writer is a few dozen lines of RFC
-# 4180, and pulling in a CSV crate to emit two dozen columns would cost more than
-# it saves.
 export-csv = []
-
-# A single self-contained page, for the person who is going to read the report
-# rather than parse it, and for the browser that prints it. Adds no dependency:
-# the stylesheet is a file in `assets/` and the markup is written directly to
-# the destination, because a templating crate for one document costs more than
-# it saves.
 export-html = []
-
-# Nmap-compatible XML, for the pipelines that already exist. DefectDojo,
-# Metasploit, Faraday and Dradis all ingest nmap's XML and none of them ingest
-# this crate's JSON, so this is what puts a zond scan into somebody's existing
-# workflow. Adds no dependency: the markup is written directly, as `export-html`
-# already does, and an XML crate for one document shape would cost more than it
-# saves.
 export-nmap = []
-
-# Every format this crate ships. A convenience for a front end that wants to
-# offer the user a choice, rather than a fifth format.
 export-all = ["export-json", "export-jsonl", "export-csv", "export-html", "export-nmap"]
-
-# Reading targets out of a table: a report this engine wrote, or a spreadsheet
-# somebody else did. Adds no dependency — the reader is the mirror of the writer
-# behind `export-csv`, and a CSV crate would cost more than the two hundred
-# lines it saves. Sniffing a table means recognising this crate's own header, and
-# the header itself lives in `format::csv`, which either direction compiles in on
-# its own; reading a format does not require being able to write it.
 import-csv = []
-
-# Reading a report this engine wrote back in as targets, as a JSON document or
-# one record per line. Shares `serde_json` with the export side, so it costs
-# nothing on top of it. It does *not* reuse the export DTOs: those are borrowing,
-# write-only types and the document root is a streaming adapter over
-# `&ScanReport`, so there is nothing there to deserialize into. The records it
-# reads are written by hand and deliberately narrower — see `import::json`.
 import-json = ["dep:serde_json"]
-
-# Defaults and named profiles, read from a TOML document. Adds no dependency:
-# `toml` is already unconditional. This is the one feature in the crate whose
-# functions can write to a filesystem, and only the one path a caller hands them
-# — see `import::settings` for why that boundary is drawn where it is.
 import-settings = []
-
-# Reading nmap's XML back in as targets: the file people already have in an
-# engagement repository, hosts with the ports found on each. Adds no dependency —
-# a hand-rolled subset parser, which is defensible only because it refuses far
-# more than it accepts; see `import::nmap`. The round-trip tests need the writer
-# too, but they ask for it themselves with a `cfg` rather than making every
-# consumer of the reader compile it.
 import-nmap = []
-
-# One scan described as a document: what to probe, and the settings that change
-# from run to run rather than the ones a settings file keeps. It is the layer
-# `import-settings` leaves out, since a file written once may not name a target
-# or widen a scan, and it is what a front end reads when the scan it runs was
-# described to it rather than typed as flags.
-#
-# Adds no dependency: `serde` is unconditional and the document is whatever
-# format the caller deserializes from. It requires `import-settings`, because a
-# request carries a settings table rather than restating its keys.
 import-request = ["import-settings"]
-
-# Every format this crate can read. The list format is unconditional and is not
-# named here: it needs nothing, and everybody needs it.
 import-all = ["import-csv", "import-json", "import-nmap", "import-request", "import-settings"]
-
-# One crafted segment out and whatever answers it, as a single call. The pieces
-# are all public already: `protocols::craft` builds the segment, `ProbeTransport`
-# carries it, `SourceResolver` says which address this host would send from, and
-# `ProbeKind` compiles the filter that decides what a reply may be. What this
-# adds is that they are assembled once here rather than at every call site, where
-# each of the six decisions got wrong produces the same silence a port behind a
-# dropping filter does.
-#
-# It also puts `protocols::craft` behind `serde`, so a packet is describable as a
-# document rather than only as a value. One story with the sending: a caller that
-# takes a packet from somewhere else needs both halves, and a caller that needs
-# neither should compile neither. The rule `import::settings` states, that a
-# derived form welds the file format to the struct layout, does not reach here:
-# `ttl`, `checksum` and `source_port` are named by RFCs 791 and 793, so the
-# layout is the wire format's and a rename is not a thing that happens.
-#
-# Adds no dependency. Off by default because it is the sharpest thing in the
-# crate: it puts caller-chosen bytes on the wire from a privileged socket, and a
-# default surface should not offer that to a consumer who came for a port scan.
 packet-exchange = []
-
-# Exposes `ProbeTransport::from_parts`, `EthernetHandle::from_parts` and
-# `PassiveListener::from_parts`, which build a transport over a caller-supplied
-# sender and reply stream instead of a socket and a capture — or, for the
-# listener, over a frame stream alone, there being no sending half to supply. That
-# is what lets a test outside this crate drive a real scanner against a synthetic
-# network: no sockets, no privileges, no interfaces.
-#
-# This gates the *fake* transports and nothing else. Building a strategy by hand
-# against a real transport needs no feature at all — see the `scanner::strategy`
-# module, whose types and `with_transport` constructors are ordinary public API.
-# It adds no dependencies and changes no behaviour, but a synthetic transport has
-# no use in a shipped binary: enable it for tests only, never for a release.
 test-support = []
-
-# Downloading the data the engine reasons with and does not ship, such as the
-# distributions' security feeds, into a directory the caller names. Off by
-# default because it is the one thing in the crate that talks to a host nobody
-# asked it to scan, and a consumer who wants the engine offline should not
-# compile a way online. It runs only when called.
-#
-# It pulls in `reqwest` and its HTTP stack. It requires `journal-format`, which
-# costs only `serde_json`, because a store writes into the invoking user's home
-# under `sudo` by the same rules a journal does, and those rules are compiled
-# with the journal.
 fetch = ["journal-format", "dep:reqwest", "dep:rustls-platform-verifier"]
 
 [dependencies]
 async-trait = "0.1.91"
-# The three parts of `pnet` this crate uses, named individually rather than
-# through the `pnet` facade.
-#
-# The facade pulls `pnet_datalink` in with everything else, and that is the crate
-# whose Windows backend reports `flags: 0` for every interface — the defect that
-# made `is_up()` false on that platform and every entry point here find an empty
-# network. Nothing reads it any more: interfaces come from `netdev` through
-# `system::interface::Link`, and frames go out through `pcap`, which was already
-# open on the same link to receive them.
-#
-# Naming the parts drops `pnet_datalink` and `ipnetwork` from the tree, and it
-# stops the next defect in a part this crate does not use from being this crate's
-# problem. `pnet_packet` is what the facade was ever wanted for: it parses and
-# builds packets, touches no platform, and is the best thing in the family.
 pnet_packet = "0.35.0"
 pnet_base = "0.35.0"
-# Raw Layer-4 sockets, used only by `transport::raw`. The one piece still to move
-# — `socket2` is already here and would do it — and not urgent, because Windows
-# blocks raw TCP sends outright and `SendMode::Auto` picks Ethernet there.
 pnet_transport = "0.35.0"
 pcap = "2.2.0"
 libc = "0.2"
 netdev = "0.38.0"
-# The two places the engine binds a socket with options `std` does not expose:
-# joining the mDNS multicast group and reusing port 5353 alongside the host's
-# own responder, which needs `SO_REUSEADDR`/`SO_REUSEPORT` set before the bind,
-# and pinning a raw socket to a forced source address and its interface, which
-# needs `SO_BINDTOIFINDEX` on Linux and `IP_BOUND_IF` on macOS. The `all`
-# feature is what exposes the second.
-# Declared rather than hand-rolled through `libc`, on the same reasoning as
-# `ring` below: `tokio` already pins this exact version, so this names a crate
-# the build compiles either way, where reimplementing `setsockopt` for macOS and
-# Linux by hand would put platform-divergent unsafe code in the tree for one
-# call site. The bound `std` socket is handed straight to `tokio`, so socket2 is
-# confined to the few lines that configure it.
 socket2 = { version = "0.6", features = ["all"] }
 rand = "0.10.2"
 thiserror = "2.0.19"
@@ -268,12 +61,6 @@ hickory-resolver = { version = "0.26.1", features = ["tokio"] }
 dashmap = "6.1.0"
 mac_oui = { version = "0.4.11", features = ["with-db"] }
 serde = { version = "1.0.229", features = ["derive"] }
-# JARM defines its own hash as the SHA-256 of the text a target's TLS answers
-# spell out, truncated to thirty-two characters. The digest is part of the
-# fingerprint's definition rather than a choice this crate makes, so the
-# published hashes the corpus matches against cannot be reproduced without it.
-# Already vendored for `build-dependencies`, which validates the detection
-# corpus the same way.
 sha2 = "0.10.9"
 serde_json = { version = "1.0.151", optional = true }
 bincode = "1.3.3"
@@ -284,104 +71,35 @@ regex-syntax = "0.8"
 fancy-regex = "0.19.0"
 aho-corasick = "1.1"
 rhai = { version = "1.26.0", features = ["sync"] }
-# Hex and Base64 for the detection sandbox: the pure helpers a Tier-2 module
-# calls to decode an SNMP OID, a Basic-auth header, or a JWT segment out of a
-# reply. Declared rather than hand-rolled on the same reasoning as `ring` below:
-# `hickory-resolver` and `x509-parser` already pin it, so it names a crate the
-# build compiles either way, and it is one zero-dependency codec for both
-# alphabets rather than two crates or an encoder open in this repository.
 data-encoding = "2.10.0"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 x509-parser = "0.18.1"
-# SHA-256 for certificate fingerprints, and nothing else. Declared rather than
-# vendored because `rustls` already pins its `ring` crypto provider, so this
-# names a crate the build compiles either way: it costs no extra compilation and
-# no new supply chain, where hand-rolling the digest would put a cryptographic
-# primitive in this repository for one call site.
 ring = "0.17"
 
-# The HTTP client behind `fetch`, and nothing else. Without its default
-# features, whose TLS provider is `aws-lc-rs`, a C and CMake build the Windows
-# cross-build and some users do not have: `rustls-no-provider` leaves the
-# provider to this crate, which hands it the `ring` one `rustls` already uses
-# here, and `system-proxy` is what makes an update work on a network that only
-# reaches out through a proxy. No HTTP/2: one large file at a time gains nothing
-# from it.
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "system-proxy"], optional = true }
-# Verifies a download's certificate against the operating system's trust store,
-# which is where a corporate network that inspects TLS installs its authority.
-# The version `reqwest` itself uses, named here because the TLS configuration
-# is built here; see `fetch`.
 rustls-platform-verifier = { version = "0.7.1", optional = true }
 
-# MD5, for one thing only: the favicon digest the imported signature corpus is
-# keyed on. Recog identifies several hundred products by the MD5 of the icon a
-# web application serves, so the algorithm is fixed by the data rather than
-# chosen here, and nothing in this crate uses it for a security decision. From
-# RustCrypto, which the build already depends on for `sha2`.
 md-5 = "0.10.6"
-# Walks Ubuntu's advisory archives and decompresses them, for `import-distro`.
-# `tar` without its default `xattr`: nothing here writes files, so extended
-# attributes are never read.
 tar = { version = "0.4.46", default-features = false, optional = true }
 liblzma = { version = "0.4.8", features = ["static"], optional = true }
 
-# Declared per-target rather than unconditionally, as the CLI already declares
-# its own `rustix`. It compiles to nothing off Windows either way, so this buys
-# no build time; what it buys is that the manifest says which platform the
-# dependency is for, and a feature added for one call site cannot be mistaken
-# for something every build needs.
-#
-# One feature per subsystem this crate actually calls into. `windows-sys` gates
-# every module behind one, so a missing feature is not a smaller build — it is
-# `cannot find X in Y` on a platform nobody compiled for. That is precisely how
-# `Win32_System_SystemInformation` came to be missing while `journal::lock` was
-# already calling `GetTickCount64`.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
-    # Interface and neighbour tables.
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
-    # SYSTEMTIME, HANDLE, and the handle-closing this crate does after a token.
     "Win32_Foundation",
     "Win32_Networking_WinSock",
-    # `WSAIoctl`, which takes an `OVERLAPPED` and so sits behind this feature
-    # too: the connect probe sets its SYN retransmissions through it.
     "Win32_System_IO",
-    # Elevation, via the process token.
     "Win32_Security",
     "Win32_System_Threading",
-    # `SystemTimeToTzSpecificLocalTime`, which is how a local time gets an
-    # offset on a platform with no `tm_gmtoff`.
     "Win32_System_Time",
 ] }
 
 [dev-dependencies]
-# A JSON Schema validator, used only to hold the exported document to
-# `assets/schema/zond-report-v1.schema.json`. That schema is the contract
-# consumers parse against, and a contract nothing checks drifts from the code
-# within a release. Chosen over `jsonschema`, which is the better-known crate
-# but pulls in an HTTP client and a TLS stack by default to fetch remote
-# references — neither of which a scanner's test suite has any business
-# building.
 boon = "0.6.1"
 proptest = "1.6.0"
-# Mints an ephemeral self-signed certificate for the one test that stands up a
-# loopback TLS server, so a detection's TLS `speak` is proven against a real
-# handshake rather than a mock. Generated per run rather than committed, so no
-# private key lives in the tree of a security tool. Pinned to the `ring` backend
-# the crate already uses; its default `aws_lc_rs` is the cmake/NASM build
-# friction `fingerprint::tls` avoids.
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
-# A dev-dependency on this crate itself, which is how the integration tests in
-# `tests/` get a build of the library with every feature they reach for:
-# `test-support` for the synthetic transports, the export and import formats the
-# portable tier round-trips, and `packet-exchange` for the exchange the simulated
-# tier drives. No test is gated on a feature, so a feature a tier uses and this
-# list leaves out is a bare `cargo test` that does not compile. Cargo unifies it
-# with the library target, so nothing is compiled twice and the features stay
-# off for every downstream consumer.
 zond-engine = { path = ".", features = ["test-support", "export-all", "import-all", "packet-exchange"] }
 
 [build-dependencies]
@@ -393,9 +111,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.10.9"
 toml = "1.1.2"
 
-# The tool that regenerates `assets/cve/nvd.toml` from the NVD year files. It
-# needs the converter, which is behind a feature, so a plain
-# `cargo check --all-targets` skips it and `--all-features` compiles it.
 [[example]]
 name = "nvd_catalogue"
 required-features = ["import-nvd"]

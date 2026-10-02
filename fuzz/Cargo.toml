@@ -1,14 +1,3 @@
-# The fuzzing harnesses, as a crate of their own.
-#
-# Separate because `libfuzzer-sys` links a runtime that replaces `main` and needs
-# a nightly toolchain and a sanitizer, none of which the library or its suite
-# should have to carry. `[workspace]` detaches this from the parent so a plain
-# `cargo build` at the repository root never reaches it.
-#
-# `cargo fuzz run <target>` from the repository root; `cargo fuzz list` names
-# them. Tracked here: this file, `README.md`, `watch.py`, `src/`,
-# `fuzz_targets/`, `seeds/` and `dictionaries/`. Everything else under `fuzz/` is
-# what a run produces and is gitignored.
 [package]
 name = "zond-engine-fuzz"
 version = "0.0.0"
@@ -19,50 +8,17 @@ edition = "2024"
 cargo-fuzz = true
 
 [workspace]
-
-# The oracles more than one target asks. A target with nothing to assert finds a
-# panic and no more, and three of these read a document into a `ScanReport`,
-# where the questions worth asking are the same whichever reader built it.
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-# `arbitrary` for the structured targets, which is every target whose subject
-# takes a description rather than a buffer. `protocols_craft` is the first:
-# handing a packet builder a `&[u8]` would spend the whole run on a hand-rolled
-# decoder rather than on the builder.
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
-# Used by `export_report`, to say that what the JSON writers emit is JSON; by
-# `protocols_craft`, as the format its round-trip oracle carries a packet
-# through; and by `journal_manifest` and `record_host`, to read the fuzzer's
-# bytes as the manifest and the host record they are on disk, the second also
-# carrying its record back through that format. The library's own parser would
-# be the wrong instrument for the first: it reads the schema, and the question
-# there is the one below that.
 serde_json = "1"
 
-# Every reader and every writer, because a target per surface needs the surface
-# compiled in. `journal-format` is named rather than left to the default set: the
-# journal targets do not compile without it, and a default is something a
-# consumer can turn off. `packet-exchange` is what puts `craft` behind `serde`,
-# which `protocols_craft` round-trips a packet through; the sending half of that
-# feature is not reached from here. `test-support` is deliberately absent: it
-# swaps a real transport for a synthetic one, and nothing here goes near one.
 [dependencies.zond-engine]
 path = ".."
 features = ["import-all", "export-all", "journal-format", "packet-exchange"]
 
-# ---------------------------------------------------------------------------
-# Targets
-#
-# Named `<surface>_<what>`, and laid out under `fuzz_targets/<surface>/`, so
-# that `cargo fuzz list` groups them and a new one has an obvious home. The
-# surface is the boundary the target attacks, not the module it happens to call:
-# `export_report` reaches the writers by way of a reader, and it is an export
-# target because a writer is what it is asserting about.
-# ---------------------------------------------------------------------------
-
-# The bytes this engine puts on the wire itself.
 [[bin]]
 name = "protocols_craft"
 path = "fuzz_targets/protocols/craft.rs"
@@ -70,7 +26,6 @@ test = false
 doc = false
 bench = false
 
-# Bytes off the wire.
 [[bin]]
 name = "wire_ethernet_frame"
 path = "fuzz_targets/wire/ethernet_frame.rs"
@@ -85,7 +40,6 @@ test = false
 doc = false
 bench = false
 
-# Files somebody else wrote.
 [[bin]]
 name = "import_targets"
 path = "fuzz_targets/import/targets.rs"
@@ -114,7 +68,6 @@ test = false
 doc = false
 bench = false
 
-# What this crate writes, and whether it can read it back.
 [[bin]]
 name = "export_report"
 path = "fuzz_targets/export/report.rs"
@@ -122,7 +75,6 @@ test = false
 doc = false
 bench = false
 
-# The contract both directions share.
 [[bin]]
 name = "format_timestamp"
 path = "fuzz_targets/format/timestamp.rs"
@@ -130,7 +82,6 @@ test = false
 doc = false
 bench = false
 
-# The boundary between a type with invariants and a file that holds it.
 [[bin]]
 name = "record_host"
 path = "fuzz_targets/record/host.rs"
@@ -138,10 +89,6 @@ test = false
 doc = false
 bench = false
 
-# What a scan writes down as it runs, and what a resume trusts. Three targets,
-# because a journal is three questions that fail differently: whether the file
-# can be read at all, whether the number in it means what a second sitting will
-# take it to mean, and whether the plan it names is still the plan.
 [[bin]]
 name = "journal_framing"
 path = "fuzz_targets/journal/framing.rs"
@@ -163,9 +110,6 @@ test = false
 doc = false
 bench = false
 
-# Two scans against each other, and several folded into one. Both take reports
-# rather than bytes, so both reach their subject through a reader — the same
-# arrangement `export_report` makes, for the same reason.
 [[bin]]
 name = "diff_reports"
 path = "fuzz_targets/diff/reports.rs"
