@@ -697,6 +697,11 @@ impl ClosedUdpPort {
 /// port while neither listens, and listeners set it, so the next listener would
 /// take the port. Windows has no port reuse; there the scan's address reuse binds
 /// beside any socket.
+///
+/// A port is kept only once the scan's own bind is seen to succeed beside it. The
+/// scan binds the wildcard address, and macOS refuses that while another user's
+/// socket has the port at any address, a daemon's connection say; the holder's
+/// bind, at loopback, is not checked against those and can be handed such a port.
 pub(crate) struct HeldTcpPort {
     port: u16,
     _held: socket2::Socket,
@@ -704,25 +709,46 @@ pub(crate) struct HeldTcpPort {
 
 impl HeldTcpPort {
     /// Takes one at `ip`.
+    ///
+    /// # Panics
+    ///
+    /// Where every port drawn is one the scan could not bind, which is a machine
+    /// whose other users hold nearly the whole ephemeral range.
     pub(crate) fn open(ip: std::net::IpAddr) -> Self {
         use socket2::{Domain, Socket, Type};
+
+        const DRAWS: usize = 64;
 
         let domain = match ip {
             std::net::IpAddr::V4(_) => Domain::IPV4,
             std::net::IpAddr::V6(_) => Domain::IPV6,
         };
-        let held = Socket::new(domain, Type::STREAM, None).expect("a socket");
-        #[cfg(unix)]
-        held.set_reuse_port(true).expect("port reuse");
-        held.bind(&SocketAddr::new(ip, 0).into())
-            .expect("binds loopback");
-        let port = held
-            .local_addr()
-            .ok()
-            .and_then(|addr| addr.as_socket())
-            .expect("a local address")
-            .port();
-        Self { port, _held: held }
+        let wildcard = match ip {
+            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+        };
+        for _ in 0..DRAWS {
+            let held = Socket::new(domain, Type::STREAM, None).expect("a socket");
+            #[cfg(unix)]
+            held.set_reuse_port(true).expect("port reuse");
+            held.bind(&SocketAddr::new(ip, 0).into())
+                .expect("binds loopback");
+            let port = held
+                .local_addr()
+                .ok()
+                .and_then(|addr| addr.as_socket())
+                .expect("a local address")
+                .port();
+
+            let scan = Socket::new(domain, Type::STREAM, None).expect("a socket");
+            scan.set_reuse_address(true).expect("address reuse");
+            #[cfg(unix)]
+            scan.set_reuse_port(true).expect("port reuse");
+            if scan.bind(&SocketAddr::new(wildcard, port).into()).is_ok() {
+                return Self { port, _held: held };
+            }
+        }
+        panic!("no port at {ip} in {DRAWS} draws that a scan could also bind");
     }
 
     /// Its number.
